@@ -18,3 +18,4 @@ Locales\zhTW.lua
 Sent.lua
 Collector.lua
 Profile.lua
+Share.lua

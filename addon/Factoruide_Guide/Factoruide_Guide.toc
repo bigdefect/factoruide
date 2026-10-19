@@ -16,6 +16,7 @@ TalentBuilds_tbc.lua
 Automation.lua
 Routes.lua
 Services.lua
+Group.lua
 Guide.lua
 Card.lua
 Mini.lua
