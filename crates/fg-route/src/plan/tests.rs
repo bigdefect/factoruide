@@ -43,7 +43,7 @@ pub(crate) fn quests_at_start(n: usize) -> Prepared {
         required_class_quests: None,
         professions: vec![],
         locale: None,
-        group: vec![],
+        mates: vec![],
         start: None,
     };
     let mut p = job::prepare(&database(), &overrides, &request, &|_| {}).unwrap();
@@ -507,4 +507,125 @@ fn greedy_grinds_to_the_mobs_of_a_quest_in_reach() {
     }];
     let route = planner(&p).greedy();
     assert!(route.contains(&Stop::quest(0, Kind::TurnIn)), "{route:?}");
+}
+
+/// Two players: quest 0 is still for both, quest 1 only for the character (the other did it).
+fn duo(xp: i64) -> Prepared {
+    let mut p = quests_at_start(2);
+    for q in &mut p.model.quests {
+        q.xp = xp;
+    }
+    p.model.initial.mates = vec![crate::model::MateStart {
+        level: 1,
+        ..crate::model::MateStart::default()
+    }];
+    p.model.initial.need = vec![0b11, 0b01];
+    p
+}
+
+const BOTH: [Stop; 4] = [
+    Stop {
+        index: 0,
+        kind: Kind::Accept,
+    },
+    Stop {
+        index: 0,
+        kind: Kind::TurnIn,
+    },
+    Stop {
+        index: 1,
+        kind: Kind::Accept,
+    },
+    Stop {
+        index: 1,
+        kind: Kind::TurnIn,
+    },
+];
+
+/// Each player gets the XP of the quests still for it, the kills' XP at its own level. The
+/// lowest one is the character planned for (`State::order`).
+#[test]
+fn each_player_gets_the_xp_of_its_quests() {
+    let mut p = duo(100);
+    p.params.group_sync_max = 10.0;
+    let planner = planner(&p);
+    let mut s = planner.start_state(planner.planned(&BOTH));
+    for stop in BOTH {
+        planner.apply(&mut s, stop, None);
+    }
+    assert_eq!(s.party(), [(1, 200), (1, 100)]);
+    assert_eq!((s.level, s.xp), (1, 100), "the one behind is planned for");
+    planner.growth().gain_kills(&mut s, 50);
+    assert_eq!(s.party(), [(1, 250), (1, 150)], "same level: the same kill XP");
+}
+
+/// The guide is over once everyone reached the target level, not the character alone.
+#[test]
+fn the_guide_waits_for_everyone() {
+    let p = duo(0);
+    let planner = planner(&p);
+    let mut s = planner.initial_state();
+    s.level = 2;
+    assert!(!planner.ended(&s), "the other player is still level 1");
+    s.mates[0].level = 2;
+    assert!(planner.ended(&s));
+}
+
+/// The time the players are levels apart beyond the window costs the score; within it nothing.
+#[test]
+fn levels_apart_cost_the_score() {
+    let mut p = duo(200);
+    (p.params.group_sync_window, p.params.group_sync_max) = (0.05, 10.0);
+    p.model.quests[0].start_uses = 60.0;
+    let route = [BOTH[2], BOTH[3], BOTH[0], BOTH[1]];
+    let planner = planner(&p);
+    let (_, apart) = planner.simulate_full(&route, None).unwrap();
+    // Quest 1 puts the character 200 XP ahead (a level is 400 at level 1): half a level apart
+    // while taking quest 0, beyond the window.
+    let bar = planner.rules().to_next_level(1) as f64;
+    let over = 200.0 / bar - p.params.group_sync_window;
+    assert!(apart.desync > 0.0, "{apart:?}");
+    assert!(
+        apart.desync <= over * (apart.total + 1.0),
+        "{} for {over} levels",
+        apart.desync
+    );
+    p.model.initial.need = vec![0b11, 0b11];
+    let planner = Planner::new(&p.model, &p.world, &p.params, &p.profile);
+    let (_, together) = planner.simulate_full(&route, None).unwrap();
+    assert_eq!(together.desync, 0.0);
+}
+
+/// Together once, then further apart than `group_sync_max`: the player behind kills mobs on
+/// its own until it is within half the window of the one ahead. Below the most, nothing.
+#[test]
+fn the_player_behind_catches_up() {
+    let mut p = duo(100);
+    (p.params.group_sync_window, p.params.group_sync_max) = (0.05, 0.1);
+    let planner = planner(&p);
+    let mut s = planner.start_state(planner.planned(&BOTH));
+    let mut events = Vec::new();
+    for stop in BOTH {
+        planner.apply(&mut s, stop, Some(&mut events));
+    }
+    let caught = events.iter().find_map(|t| match t.event {
+        super::Event::CatchUp { members, seconds, .. } => Some((members, seconds)),
+        _ => None,
+    });
+    let (members, seconds) = caught.expect("a catch-up");
+    assert_eq!(members, 0b10, "the other player, behind");
+    assert!(seconds > 0.0);
+    assert!(planner.growth().spread(&s) <= 0.05, "{}", planner.growth().spread(&s));
+    assert_eq!(s.party()[0], (1, 200), "the character waits");
+    p.params.group_sync_max = 0.3;
+    let planner = Planner::new(&p.model, &p.world, &p.params, &p.profile);
+    let mut s = planner.start_state(planner.planned(&BOTH));
+    for stop in BOTH {
+        planner.apply(&mut s, stop, None);
+    }
+    assert_eq!(
+        s.party(),
+        [(1, 200), (1, 100)],
+        "a quarter of a level apart: within the most"
+    );
 }

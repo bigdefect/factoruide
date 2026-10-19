@@ -248,6 +248,14 @@ pub struct Step {
     /// The part of `power` the gear brings (levels).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gear: Option<f64>,
+    /// The players of a group guide when the step is done, in the guide's `players` order: level
+    /// and XP into it (`level` is the lowest one's).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub party: Vec<(i64, i64)>,
+    /// In a group guide, the players the step is for (a bit each in the guide's `players`
+    /// order) when not everyone: a quest some did already, players catching up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub members: Option<u8>,
     /// Kept when skipping ahead to the next checkpoint: a chain going on after it, a class
     /// quest, a planned reward, training.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -305,6 +313,8 @@ impl Step {
             time,
             power: None,
             gear: None,
+            party: Vec::new(),
+            members: None,
             keep: false,
             event: None,
         }
@@ -366,7 +376,27 @@ pub struct Route {
     /// The reputation goals: where the character starts and ends with each faction.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reputation: Vec<ReputationReached>,
+    /// The players of a group guide (none alone), in the order of the steps' `members` bits:
+    /// the one planned for first (its race and class are the guide's).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub players: Vec<Player>,
+    /// Levels a group's players are apart at most once together (`Params::group_sync_max`):
+    /// further, the addon tells them to make the guide again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_max: Option<f64>,
+    /// The spells worth learning of the group's other classes (as `spells`): class ID, spells.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub class_spells: Vec<(i64, Vec<i64>)>,
     pub steps: Vec<Step>,
+}
+
+/// A player of a group guide.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Player {
+    /// "Name-Realm".
+    pub name: String,
+    pub race_id: i64,
+    pub class_id: i64,
 }
 
 /// A reputation goal and how far the guide gets: points counted from the bottom of Neutral.

@@ -81,6 +81,12 @@ impl StepWriter<'_> {
                 near,
                 zone,
             } => self.grind_mobs(&mut step, t, *mobs, *seconds, near, *zone),
+            Event::CatchUp {
+                members,
+                seconds,
+                near,
+                zone,
+            } => self.group_catch_up(&mut step, *members, *seconds, near, *zone),
             Event::DeathSkip { pos, zone } => self.death_skip(&mut step, pos, *zone),
             Event::Hearth { inn, recall } => self.hearth(&mut step, *inn, *recall),
             Event::Teleport { to } => self.teleport(&mut step, *to),
@@ -165,6 +171,7 @@ impl StepWriter<'_> {
             farm_xp: None,
             level,
             keep: true,
+            members: None,
             event: None,
             ..at.clone()
         }
@@ -209,6 +216,7 @@ impl StepWriter<'_> {
             map: at.map.clone(),
             world: at.world,
             path: Vec::new(),
+            members: None,
             ..grind.clone()
         }
     }
@@ -279,6 +287,8 @@ impl StepWriter<'_> {
             time: t.time.round(),
             power: power.map(|_| (t.power * 10.0).round() / 10.0),
             gear: power.map(|_| (t.gear * 10.0).round() / 10.0),
+            party: t.party.clone(),
+            members: None,
             keep: false,
             event: None,
         }
@@ -541,6 +551,19 @@ impl StepWriter<'_> {
         self.place(near, Some(zone))
     }
 
+    /// The players behind killing mobs to catch up with the group.
+    fn group_catch_up(&self, step: &mut Step, members: u8, seconds: f64, near: &Pos, zone: i64) -> Place {
+        step.kind = StepKind::Grind;
+        step.members = Some(members);
+        let names = self.planner.profile.member_names(members);
+        step.say.push(
+            Phrase::new("group.catch_up")
+                .arg("players", Arg::List(names.into_iter().map(Arg::Text).collect()))
+                .arg("minutes", num((seconds / 60.0).ceil() as i64)),
+        );
+        self.place(near, Some(zone))
+    }
+
     fn zone(&self, zone: i64) -> Arg {
         Arg::Zone(zone, self.planner.world.zone_name(zone).to_owned())
     }
@@ -722,6 +745,14 @@ impl StepWriter<'_> {
         let q = &self.planner.model.quests[stop.index as usize];
         step.quest = Some(q.id);
         step.quest_name = Some(q.name.clone());
+        // In a group, a quest some players did already (or of another class or race): for the
+        // others only, the ones who did it come along.
+        let init = &self.planner.model.initial;
+        let everyone = (1u8 << (init.mates.len() + 1)) - 1;
+        let need = init.need(stop.index as usize);
+        if !init.mates.is_empty() && need != everyone {
+            step.members = Some(need);
+        }
         step.alt = q
             .exclusive
             .iter()

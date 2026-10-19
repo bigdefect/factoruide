@@ -181,7 +181,7 @@ pub fn audit(
             required_class_quests: None,
             professions: Vec::new(),
             locale: None,
-            group: Vec::new(),
+            mates: Vec::new(),
             start: None,
         };
         let prepared = match job::prepare(conn, overrides, &request, &|_| {}) {

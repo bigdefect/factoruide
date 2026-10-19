@@ -89,6 +89,7 @@ impl<'g> Growth<'g> {
     /// XP of kills: doubled while the character is rested, up to its rested XP. Returns the XP
     /// gained.
     pub(crate) fn gain_kills(self, s: &mut State, amount: i64) -> i64 {
+        self.mates_kill(s, amount);
         let bonus = amount.min(s.rested).max(0);
         s.rested -= bonus;
         self.gain(s, amount + bonus);
@@ -107,6 +108,92 @@ impl<'g> Growth<'g> {
             s.farm_used = 0;
             self.refresh_power(s);
         }
+    }
+
+    /// The other players of a group guide (`State::mates`).
+    pub(crate) fn mates(self) -> usize {
+        self.model.initial.mates.len()
+    }
+
+    /// The other players' XP of kills worth `amount` to the character: the same mobs, at their
+    /// own level (fewer when above it, none once gray), doubled while they are rested.
+    pub(crate) fn mates_kill(self, s: &mut State, amount: i64) {
+        let n = self.mates();
+        if n == 0 || amount <= 0 {
+            return;
+        }
+        let rules = self.rules();
+        let content = xp::content_at(s.pos.continent, s.pos.zone);
+        let own = rules.mob_xp(s.level, s.level, content);
+        for k in 0..n {
+            let m = &mut s.mates[k];
+            let each = if own > 0.0 {
+                rules.mob_xp(m.level, s.level, content) / own
+            } else {
+                1.0
+            };
+            let gained = (amount as f64 * each) as i64;
+            let bonus = gained.min(m.rested).max(0);
+            m.rested -= bonus;
+            Self::mate_gain(rules, m, gained + bonus);
+        }
+    }
+
+    fn mate_gain(rules: &xp::Rules, m: &mut super::state::MateXp, amount: i64) {
+        m.xp += amount;
+        while m.level < rules.max_level && m.xp >= rules.to_next_level(m.level) {
+            m.xp -= rules.to_next_level(m.level);
+            m.level += 1;
+        }
+    }
+
+    /// The XP of turning in quest `i` to each member it is still for (`Initial::need`); returns
+    /// the character's.
+    pub(crate) fn reward(self, s: &mut State, i: u32) -> i64 {
+        let q = self.quest_at(i);
+        let need = self.model.initial.need(i as usize);
+        for k in 0..self.mates() {
+            if need & (1 << s.order[k + 1]) != 0 {
+                let m = &mut s.mates[k];
+                Self::mate_gain(self.rules(), m, self.quest_reward(q, m.level));
+            }
+        }
+        if need & (1 << s.order[0]) == 0 {
+            return 0;
+        }
+        let reward = self.quest_reward(q, s.level);
+        self.gain(s, reward);
+        reward
+    }
+
+    /// XP of discovering an area of level `area`, to everyone in the group.
+    pub(crate) fn explore(self, s: &mut State, area: i64) -> i64 {
+        for k in 0..self.mates() {
+            let m = &mut s.mates[k];
+            Self::mate_gain(self.rules(), m, self.rules().exploration_xp(m.level, area));
+        }
+        let xp = self.rules().exploration_xp(s.level, area);
+        self.gain(s, xp);
+        xp
+    }
+
+    /// How far apart the group's levels are (0 alone).
+    pub(crate) fn spread(self, s: &State) -> f64 {
+        let rules = self.rules();
+        let at = |level: i64, xp: i64| level as f64 + xp as f64 / rules.to_next_level(level).max(1) as f64;
+        let own = at(s.level, s.xp);
+        let (mut lo, mut hi) = (own, own);
+        for m in &s.mates[..self.mates()] {
+            let l = at(m.level, m.xp);
+            lo = lo.min(l);
+            hi = hi.max(l);
+        }
+        hi - lo
+    }
+
+    /// Lowest level in the group.
+    pub(crate) fn lowest_level(self, s: &State) -> i64 {
+        s.mates[..self.mates()].iter().map(|m| m.level).fold(s.level, i64::min)
     }
 
     /// XP grinding may still give in the current level.
@@ -199,6 +286,7 @@ impl<'g> Growth<'g> {
             s.spent.grind_xp += need;
             s.grind_used += need;
             s.rested -= need - killed;
+            self.mates_kill(s, killed);
             self.gain(s, need);
         }
         s.time += t;

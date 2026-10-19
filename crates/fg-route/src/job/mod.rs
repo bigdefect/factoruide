@@ -5,6 +5,7 @@ mod addon_settings;
 mod character;
 mod draft;
 mod edit;
+mod group;
 mod notes;
 mod options;
 mod overrides;
@@ -28,7 +29,7 @@ pub use overrides::{Overrides, RaceDef};
 pub use paths::{add_walk_paths, walk_world};
 pub use race::{optimize, optimize_interruptible};
 pub use reputation::race_base;
-pub use request::{PlanOutcome, PlanRequest, Prepared};
+pub use request::{GROUP_MAX, GROUP_MIN_LEVEL, PlanOutcome, PlanRequest, Prepared};
 pub use routes::{
     add_polestar_source, addon_walks, load_routes, polestar_source_dir, render_routes, save_route, slug,
     write_addon_routes, write_polestar_pack, write_polestar_source,
@@ -149,9 +150,26 @@ pub fn plan_interruptible(
         "{}: level {} -> {} in {} with {} quests",
         route.name, route.from_level, route.to_level, route.total_time_text, route.quests
     ));
+    let end = planner.end_of(&best).map(|end| {
+        let members = req.members(prepared.params.edition.rules());
+        let start = members
+            .first()
+            .copied()
+            .or(req.start.as_ref())
+            .cloned()
+            .unwrap_or_else(|| StartState {
+                name: prepared.profile.name.clone(),
+                race: prepared.profile.race_id,
+                class: req.class.to_uppercase(),
+                faction: prepared.profile.faction.to_string(),
+                ..StartState::default()
+            });
+        start.after(&prepared.model, &prepared.world, prepared.params.edition.rules(), &end)
+    });
     Ok(PlanOutcome {
         plan: edit::route_steps(&planner, &best),
         explicit: true,
+        end,
         route,
         notes: prepared.notes,
         walks: walks.map(|_| prepared.world.terrain.memory()),
@@ -173,8 +191,14 @@ pub fn prepare(
     progress(r#"@progress {"phase":"prepare","step":"quests"}"#);
     let mut model = model::load(conn, &world, &profile, &params)?;
     let mut start_notes = Vec::new();
-    if let Some(start) = &req.start {
+    let members = req.members(params.edition.rules());
+    // A group is planned for the member with the least XP.
+    let start = members.first().copied().or(req.start.as_ref());
+    if let Some(start) = start {
         model.initial = start.initial(&model, &world, &mut params, &mut start_notes);
+        if members.len() > 1 {
+            group::join(&mut model, &world, start, &members[1..], &mut start_notes);
+        }
         // Quests of the log the model does not have: named from the database, for their abandon.
         for (id, name) in model.initial.log.iter_mut().filter(|(_, name)| name.is_empty()) {
             *name = conn
@@ -193,13 +217,7 @@ pub fn prepare(
             model.initial.log.len()
         ));
     }
-    model.initial.reputation = reputation::starting(
-        conn,
-        &params.reputation_goals,
-        &profile,
-        req.start.as_ref(),
-        &mut start_notes,
-    )?;
+    model.initial.reputation = reputation::starting(conn, &params.reputation_goals, &profile, start, &mut start_notes)?;
     let mut notes = notes::model_notes(&model, &world, progress);
     notes.extend(start_notes);
     Ok(Prepared {

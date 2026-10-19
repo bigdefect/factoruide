@@ -114,6 +114,15 @@ pub enum Event {
         near: Pos,
         zone: i64,
     },
+    /// In a group further apart than `Params::group_sync_max`, the players behind (`members`,
+    /// a bit each in `Profile` order) kill mobs of their level on their own, the others
+    /// waiting, until they are within `Params::group_sync_window`.
+    CatchUp {
+        members: u8,
+        seconds: f64,
+        near: Pos,
+        zone: i64,
+    },
     /// Died on purpose, respawned at the spirit healer near `pos`.
     DeathSkip {
         pos: Pos,
@@ -146,6 +155,8 @@ pub struct Timed {
     /// of it its gear brings (levels).
     pub power: f64,
     pub gear: f64,
+    /// The players of a group guide, in `Profile` order: level and XP into it (empty alone).
+    pub party: Vec<(i64, i64)>,
 }
 
 /// Objective stops done one after the other within `gather_radius` of the first one: objects
@@ -203,6 +214,18 @@ impl std::ops::Index<usize> for Flags {
     }
 }
 
+/// Most other players of a group guide (`Profile::mates`).
+pub(crate) const MATES: usize = 4;
+
+/// Where another player of a group guide stands: it does the same stops as the character, and
+/// gets the XP of the quests still for it (`Initial::need`) and of the kills at its own level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct MateXp {
+    pub(crate) level: i64,
+    pub(crate) xp: i64,
+    pub(crate) rested: i64,
+}
+
 #[derive(Clone)]
 pub(crate) struct State {
     pub(crate) pos: Pos,
@@ -212,6 +235,15 @@ pub(crate) struct State {
     pub(crate) xp: i64,
     /// Rested XP left: kills give double up to it.
     pub(crate) rested: i64,
+    /// The other players of a group guide (the first `Initial::mates.len()`).
+    pub(crate) mates: [MateXp; MATES],
+    /// The member (0: the character planned for, then `Profile::mates`) in each place: the
+    /// character's own (`level`, `xp`, `rested`), then `mates`. The lowest is always first, so
+    /// that the levels of quests and mobs are those it can take on.
+    pub(crate) order: [u8; MATES + 1],
+    /// The group has been within `Params::group_sync_window` (from then on, never further
+    /// apart than `group_sync_max`).
+    pub(crate) synced: bool,
     /// Common loot in the bags (`Model::loot`), gathered by the kills so far, less what
     /// objectives took.
     pub(crate) stock: Vec<f32>,
@@ -283,6 +315,20 @@ pub(crate) struct State {
 }
 
 impl State {
+    /// The group's players in `Profile` order: level and XP into it (empty alone).
+    pub(crate) fn party(&self) -> Vec<(i64, i64)> {
+        let n = self.mates.iter().take_while(|m| m.level > 0).count();
+        if n == 0 {
+            return Vec::new();
+        }
+        let mut party = vec![(0, 0); n + 1];
+        party[usize::from(self.order[0])] = (self.level, self.xp);
+        for (k, m) in self.mates[..n].iter().enumerate() {
+            party[usize::from(self.order[k + 1])] = (m.level, m.xp);
+        }
+        party
+    }
+
     /// What the character takes on depends on besides its level (`Params::reach`).
     pub(crate) fn might(&self) -> crate::params::Might {
         crate::params::Might {
@@ -363,6 +409,18 @@ pub struct Breakdown {
     /// Reputation points the goals still miss at the end (see `Params::reputation_goals`).
     #[serde(default)]
     pub reputation_missing: f64,
+    /// A group's levels apart beyond `Params::group_sync_window`, by the time they stay so
+    /// (level seconds): what the group waits to play together.
+    #[serde(default)]
+    pub desync: f64,
+    /// The longest the group was out of `Params::group_sync_window` from the start (seconds):
+    /// the time it takes to get its levels together.
+    #[serde(default)]
+    pub sync_time: f64,
+    /// Time the players behind spent killing mobs on their own to catch up (part of
+    /// `grinding`, see `Event::CatchUp`).
+    #[serde(default)]
+    pub catch_up: f64,
 }
 
 /// Quests a route accepts (bit 1), turns in (bit 2) or does an objective of (bit 4), and where

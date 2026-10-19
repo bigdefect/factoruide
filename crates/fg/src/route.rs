@@ -25,8 +25,11 @@ pub struct RouteOptions {
     pub professions: Vec<fg_route::profession::ProfessionGoal>,
     /// Language of the guide texts.
     pub locale: Option<String>,
-    /// Classes of the other players leveling together.
-    pub group: Vec<String>,
+    /// Profiles (JSON) of the character and of the other players of a group guide, and where to
+    /// write the character's at the end.
+    pub start: Option<PathBuf>,
+    pub mates: Vec<PathBuf>,
+    pub profile_out: Option<PathBuf>,
     pub overrides: PathBuf,
     pub routes_dir: PathBuf,
     pub addon_dir: PathBuf,
@@ -63,8 +66,8 @@ pub fn run(conn: &Connection, opts: &RouteOptions) -> Result<()> {
         required_class_quests: None,
         professions: opts.professions.clone(),
         locale: opts.locale.clone(),
-        group: opts.group.clone(),
-        start: None,
+        start: opts.start.as_deref().map(read_profile).transpose()?,
+        mates: opts.mates.iter().map(|p| read_profile(p)).collect::<Result<_>>()?,
     };
     let outcome = job::plan(conn, &overrides, &request, &|m| {
         if !m.starts_with('@') {
@@ -105,8 +108,25 @@ pub fn run(conn: &Connection, opts: &RouteOptions) -> Result<()> {
             r.name, r.start, r.reached, r.target
         );
     }
+    if b.sync_time > 0.0 || b.desync > 0.0 {
+        eprintln!(
+            "  group levels together after {} (levels apart beyond the window: {:.0} level-seconds)",
+            m(b.sync_time),
+            b.desync
+        );
+    }
+    if let (Some(path), Some(end)) = (&opts.profile_out, &outcome.end) {
+        std::fs::write(path, serde_json::to_string_pretty(end)?)?;
+        eprintln!("wrote {}", path.display());
+    }
     job::save_route(&opts.routes_dir, route)?;
     write_addon_routes(conn, &opts.overrides, &opts.routes_dir, &opts.addon_dir)
+}
+
+/// A character's profile (JSON, as `--profile-out` writes it).
+fn read_profile(path: &Path) -> Result<job::StartState> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("{} is not a profile", path.display()))
 }
 
 /// Regenerate the addon's Routes.lua from every route JSON (each in its own language), and

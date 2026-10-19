@@ -64,6 +64,7 @@ impl Planner<'_> {
                         xp: s.xp,
                         power: s.level as f64 + s.bonus,
                         gear: s.gear_bonus,
+                        party: s.party(),
                     });
                 }
                 Want::Grind(level) => {
@@ -87,7 +88,7 @@ impl Planner<'_> {
                         && !s.accepted[i]
                         && !s.turned[i]
                         && s.log < self.params.quest_log_size
-                        && !self.availability().prereqs_met(&s, self.quest(stop.index));
+                        && !self.availability().prereqs_met(&s, stop.index);
                     if trusted && !self.availability().valid(&s, *stop) {
                         trusted_accepts.push(stop.index);
                     }

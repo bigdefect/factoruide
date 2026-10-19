@@ -11,7 +11,8 @@ use std::path::PathBuf;
 const UNKNOWN_FLIGHT: i64 = 2;
 
 /// The profiles of SavedVariables files (see `collector::find_saved_variables`), as JSON objects
-/// (the planner's `StartState`), most recent first. Flight paths also come from the flight maps
+/// (the planner's `StartState`), most recent first; those received from other players carry
+/// `"shared": true`. Flight paths also come from the flight maps
 /// the collector recorded before the addon kept them in the profile.
 pub fn read(files: &[PathBuf]) -> Result<Vec<serde_json::Value>> {
     let mut out = Vec::new();
@@ -41,6 +42,17 @@ pub fn read(files: &[PathBuf]) -> Result<Vec<serde_json::Value>> {
             if json["name"].as_str().is_none_or(str::is_empty) {
                 json["name"] = key.into();
             }
+            out.push(json);
+        }
+        // Other players' profiles received in a party (`/fg share`, the addon's Share.lua), for
+        // group guides: marked `shared`, under the name of who sent them.
+        for (key, p) in db.field("shared").str_entries() {
+            if p.field("level").int().is_none() {
+                continue;
+            }
+            let mut json = p.to_json();
+            json["name"] = key.into();
+            json["shared"] = true.into();
             out.push(json);
         }
     }
@@ -84,13 +96,21 @@ mod tests {
                     ["Old-Realm"] = { ["level"] = 5, ["time"] = 300 },
                     ["Empty-Realm"] = {},
                 },
+                ["shared"] = {
+                    ["Pata-Realm"] = { ["level"] = 13, ["name"] = "Someone-Else", ["time"] = 100 },
+                },
             }"#,
         )
         .unwrap();
         let profiles = read(&[file]).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         let names: Vec<&str> = profiles.iter().map(|p| p["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["Old-Realm", "Brouz-Realm"], "recorded ones, most recent first");
+        assert_eq!(names, ["Old-Realm", "Brouz-Realm", "Pata-Realm"], "most recent first");
+        assert_eq!(
+            profiles[2]["shared"], true,
+            "received from another player, named by its sender"
+        );
+        assert!(profiles[1].get("shared").is_none());
         let brouz = &profiles[1];
         assert_eq!(brouz["flights"], serde_json::json!([23, 25]));
         assert_eq!(brouz["completed"], serde_json::json!([4641, 788]));

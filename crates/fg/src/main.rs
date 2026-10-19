@@ -33,6 +33,24 @@ struct Cli {
     command: Command,
 }
 
+/// The characters a guide starts from, as their addon recorded them.
+#[derive(clap::Args)]
+struct Players {
+    /// Start from a character as its addon recorded it: a profile JSON (as --profile-out
+    /// writes); its level replaces --from-level (--race and --class are its own; in a group,
+    /// the guide is planned for the player with the least XP)
+    #[arg(long)]
+    start: Option<PathBuf>,
+    /// Another player of a group guide, a profile JSON (repeatable, needs --start): the
+    /// same guide for everyone, every player level 10 or more and of one faction
+    #[arg(long = "mate")]
+    mates: Vec<PathBuf>,
+    /// Write where the guide leaves the character as a profile JSON (a made-up player, to
+    /// start other guides from: --start, --mate)
+    #[arg(long)]
+    profile_out: Option<PathBuf>,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Plan a leveling route and export it (routes/*.json and the addon's Routes.lua)
@@ -79,9 +97,8 @@ enum Command {
         /// Language of the guide texts (frFR, deDE...; English where not translated)
         #[arg(long)]
         locale: Option<String>,
-        /// Classes of the other players leveling together (group mode), e.g. priest,mage
-        #[arg(long, value_delimiter = ',')]
-        group: Vec<String>,
+        #[command(flatten)]
+        players: Box<Players>,
     },
     /// Summarize a planned route (zone changes, or every step with --full)
     Show {
@@ -202,7 +219,7 @@ fn main() -> Result<()> {
             progression,
             params,
             locale,
-            group,
+            players,
         } => route::run(
             &open()?,
             &route::RouteOptions {
@@ -219,7 +236,9 @@ fn main() -> Result<()> {
                 progression,
                 params,
                 locale,
-                group,
+                start: players.start,
+                mates: players.mates,
+                profile_out: players.profile_out,
                 professions: profession
                     .iter()
                     .map(|p| {

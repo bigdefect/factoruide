@@ -6,6 +6,22 @@ use super::state::{Breakdown, Kind, Planned, State, Stop, Timed};
 use crate::world::Pos;
 use std::rc::Rc;
 
+/// Where a route leaves the character.
+#[derive(Debug, Clone)]
+pub struct End {
+    pub level: i64,
+    pub xp: i64,
+    pub rested: i64,
+    pub pos: Pos,
+    pub zone: i64,
+    /// Inn the hearthstone is bound to, flight paths known (a bit per taxi node).
+    pub bind: usize,
+    pub known: u128,
+    /// Quests turned in (indices), and those in the log with whether their objectives are done.
+    pub turned: Vec<usize>,
+    pub log: Vec<(usize, bool)>,
+}
+
 /// States before each stop of a route, and its total time.
 pub(crate) struct Run {
     pub(crate) states: Vec<State>,
@@ -33,6 +49,7 @@ impl Planner<'_> {
             + self.params.zone_change_weight * f64::from(spent.zone_changes)
             + self.params.preferred_zone_weight * spent.outside_preferred
             + self.params.abandon_weight * f64::from(spent.abandoned)
+            + self.params.group_sync_weight * spent.desync
     }
 
     /// Time to reach the target level following `route` (plus penalties), or None if invalid.
@@ -64,6 +81,26 @@ impl Planner<'_> {
 
     pub fn simulate_full(&self, route: &[Stop], trace: Option<&mut Vec<Timed>>) -> Option<(f64, Breakdown)> {
         self.simulate_state(route, trace).map(|(total, s)| (total, s.spent))
+    }
+
+    /// Where `route` leaves the character (None if invalid).
+    pub fn end_of(&self, route: &[Stop]) -> Option<End> {
+        let (_, s) = self.simulate_state(route, None)?;
+        let n = self.model.quests.len();
+        Some(End {
+            level: s.level,
+            xp: s.xp,
+            rested: s.rested,
+            pos: s.pos,
+            zone: s.zone,
+            bind: s.bind,
+            known: s.known,
+            turned: (0..n).filter(|&i| s.rewarded(i)).collect(),
+            log: (0..n)
+                .filter(|&i| s.accepted[i] && !s.turned[i])
+                .map(|i| (i, self.availability().objectives_done(&s, i as u32)))
+                .collect(),
+        })
     }
 
     /// Points with the faction of each reputation goal at the end of `route`.
@@ -268,6 +305,9 @@ impl Planner<'_> {
                 if s.level == old.level
                     && s.xp == old.xp
                     && s.rested == old.rested
+                    && s.mates == old.mates
+                    && s.order == old.order
+                    && s.synced == old.synced
                     && s.stock == old.stock
                     && s.known == old.known
                     && s.log == old.log
@@ -361,7 +401,7 @@ impl Planner<'_> {
             if !self.availability().valid(&s, stop) {
                 let reason = match stop.kind {
                     Kind::Accept if s.log >= self.params.quest_log_size => "quest log full".to_owned(),
-                    Kind::Accept if !self.availability().prereqs_met(&s, self.quest(stop.index)) => {
+                    Kind::Accept if !self.availability().prereqs_met(&s, stop.index) => {
                         let q = self.quest(stop.index);
                         format!("prerequisites {:?}/{:?} not done", q.pre_all, q.pre_any)
                     }
@@ -396,7 +436,7 @@ impl Planner<'_> {
             Kind::Accept if s.turned[i] => "already turned in",
             Kind::Accept if s.accepted[i] => "already in the log",
             Kind::Accept if s.log >= self.params.quest_log_size => "quest log full",
-            Kind::Accept if !self.availability().prereqs_met(s, self.quest(stop.index)) => "prerequisite not done",
+            Kind::Accept if !self.availability().prereqs_met(s, stop.index) => "prerequisite not done",
             Kind::Accept if self.availability().blocked(s, self.quest(stop.index)) => "exclusive quest taken",
             Kind::Accept if self.availability().gray_dead_end(s, self.quest(stop.index), stop.index) => {
                 "gray quest leading nowhere"

@@ -52,7 +52,7 @@ fn request_to(to_level: i64) -> PlanRequest {
         required_class_quests: None,
         professions: vec![],
         locale: None,
-        group: vec![],
+        mates: vec![],
         start: None,
     }
 }

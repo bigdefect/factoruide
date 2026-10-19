@@ -51,21 +51,34 @@ pub(crate) struct Availability<'v> {
 }
 
 impl Availability<'_> {
-    pub(crate) fn prereqs_met(&self, s: &State, q: &Quest) -> bool {
-        let done = |id: &i64| match self.model.index.get(id) {
-            Some(&i) => s.rewarded(i),
-            // Not plannable (other class, removed, gray...): known for a character met in game,
-            // else assumed done only when starting mid-way.
-            None => self.model.initial.done_outside(*id, self.profile.from_level),
-        };
-        q.pre_all.iter().all(done) && (q.pre_any.is_empty() || q.pre_any.iter().any(done))
+    /// The prerequisites of quest `i` are done: in a group, by each member it is for (before the
+    /// route, or turned in on it).
+    pub(crate) fn prereqs_met(&self, s: &State, i: u32) -> bool {
+        let q = self.quest_at(i);
+        let init = &self.model.initial;
+        if init.mates.is_empty() {
+            let done = |id: &i64| match self.model.index.get(id) {
+                Some(&i) => s.rewarded(i),
+                // Not plannable (other class, removed, gray...): known for a character met in
+                // game, else assumed done only when starting mid-way.
+                None => init.done_outside(*id, self.profile.from_level),
+            };
+            return q.pre_all.iter().all(done) && (q.pre_any.is_empty() || q.pre_any.iter().any(done));
+        }
+        let need = init.need(i as usize);
+        (0..=init.mates.len()).filter(|m| need & (1 << m) != 0).all(|m| {
+            let done = |id: &i64| init.done_by(m, *id) || self.model.index.get(id).is_some_and(|&j| s.rewarded(j));
+            q.pre_all.iter().all(done) && (q.pre_any.is_empty() || q.pre_any.iter().any(done))
+        })
     }
 
     pub(crate) fn blocked(&self, s: &State, q: &Quest) -> bool {
         // A quest given up no longer holds its exclusive group.
+        // In a group, one done before the route closes it to that member only (`Initial::need`).
+        let group = !self.model.initial.mates.is_empty();
         let taken = |id: &i64| match self.model.index.get(id) {
             Some(&i) => s.accepted[i] || s.rewarded(i),
-            None => self.model.initial.completed.as_ref().is_some_and(|c| c.contains(id)),
+            None => !group && self.model.initial.completed.as_ref().is_some_and(|c| c.contains(id)),
         };
         q.exclusive.iter().any(taken) || q.breadcrumb_for.as_ref().is_some_and(taken)
     }
@@ -83,7 +96,7 @@ impl Availability<'_> {
         !s.accepted[i as usize]
             && !s.turned[i as usize]
             && s.log < self.params.quest_log_size
-            && self.prereqs_met(s, q)
+            && self.prereqs_met(s, i)
             && !self.blocked(s, q)
             && q.skill
                 .is_none_or(|(p, value)| self.model.professions[p].skill_at(s.level) >= value)
@@ -158,7 +171,8 @@ impl Availability<'_> {
             }
             Kind::TurnIn => s.accepted[i] && !s.turned[i] && self.objectives_done(s, stop.index),
             Kind::LearnFlight => s.known & (1u128 << i) == 0,
-            Kind::Bind => s.bind != i && i != self.model.start_inn,
+            // A group bound apart binds anywhere, even where the character is.
+            Kind::Bind => (s.bind != i || s.hearth_ready.is_infinite()) && i != self.model.start_inn,
             Kind::Hearth => {
                 (i == 0 && !self.params.excluded_zones.contains(&self.model.inns[s.bind].zone))
                     || (i == 1 && self.model.recall.is_some())

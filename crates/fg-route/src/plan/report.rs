@@ -16,21 +16,16 @@ impl Planner<'_> {
     }
 
     fn missing_required(&self, route: &[Stop], zone: bool) -> Vec<String> {
+        // Done before the route (in a group: by everyone it is for), or in it.
+        let s0 = self.initial_state();
+        let turned = |j: usize| s0.turned[j] || route.iter().any(|s| s.kind == Kind::TurnIn && s.index as usize == j);
         self.model
             .quests
             .iter()
             .enumerate()
             .filter(|(i, q)| {
-                let done = |id: &i64| {
-                    self.model
-                        .index
-                        .get(id)
-                        .is_some_and(|&j| route.iter().any(|s| s.kind == Kind::TurnIn && s.index as usize == j))
-                };
-                q.mandatory
-                    && q.zone_forced == zone
-                    && !route.iter().any(|s| s.kind == Kind::TurnIn && s.index as usize == *i)
-                    && !q.exclusive.iter().any(done)
+                let done = |id: &i64| self.model.index.get(id).is_some_and(|&j| turned(j));
+                q.mandatory && q.zone_forced == zone && !turned(*i) && !q.exclusive.iter().any(done)
             })
             .map(|(i, q)| {
                 let mut candidate = route.to_vec();
@@ -59,7 +54,7 @@ impl Planner<'_> {
                 "too low"
             } else if s.log >= self.params.quest_log_size {
                 "log full"
-            } else if !self.availability().prereqs_met(s, q) {
+            } else if !self.availability().prereqs_met(s, i) {
                 "prerequisites"
             } else if self.availability().blocked(s, q) {
                 "exclusive"

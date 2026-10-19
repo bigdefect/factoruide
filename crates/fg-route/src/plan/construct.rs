@@ -522,7 +522,7 @@ impl Planner<'_> {
             let after = run
                 .states
                 .iter()
-                .position(|st| st.level >= quest.min_level && self.availability().prereqs_met(st, quest))
+                .position(|st| st.level >= quest.min_level && self.availability().prereqs_met(st, q))
                 .unwrap_or(candidate.len())
                 .min(candidate.len());
             self.insert_quest_after(&mut candidate, q, after);

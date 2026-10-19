@@ -17,7 +17,7 @@ pub use lua::to_lua;
 pub use phrase::{Arg, Phrase};
 pub use templates::Lang;
 pub use types::{
-    Checkpoint, MapPointOut, ReputationReached, Route, RouteProfession, Step, StepKind, Target, TargetKind,
+    Checkpoint, MapPointOut, Player, ReputationReached, Route, RouteProfession, Step, StepKind, Target, TargetKind,
 };
 
 use crate::model::{Names, Profile};
@@ -268,6 +268,31 @@ fn route_of(
             .collect(),
         checkpoints,
         reputation: reputation_reached(planner, route),
+        players: if profile.mates.is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once(Player {
+                name: profile.player.clone(),
+                race_id: profile.race_id,
+                class_id: profile.class_id,
+            })
+            .chain(profile.mates.iter().map(|m| Player {
+                name: m.name.clone(),
+                race_id: m.race_id,
+                class_id: m.class_id,
+            }))
+            .collect()
+        },
+        sync_max: (!profile.mates.is_empty()).then_some(planner.params.group_sync_max),
+        class_spells: {
+            let mut out: Vec<(i64, Vec<i64>)> = Vec::new();
+            for (m, spells) in profile.mates.iter().zip(&model.mate_spells) {
+                if m.class_id != profile.class_id && !spells.is_empty() && out.iter().all(|(c, _)| *c != m.class_id) {
+                    out.push((m.class_id, spells.clone()));
+                }
+            }
+            out
+        },
         steps,
     }
 }

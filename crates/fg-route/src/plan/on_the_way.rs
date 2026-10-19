@@ -141,9 +141,7 @@ impl Planner<'_> {
             };
             if d <= r {
                 s.explored.set(i, true);
-                let xp = self.rules().exploration_xp(s.level, self.model.explore[i].level);
-                s.spent.explore_xp += xp;
-                self.growth().gain(s, xp);
+                s.spent.explore_xp += self.growth().explore(s, self.model.explore[i].level);
             }
         }
     }

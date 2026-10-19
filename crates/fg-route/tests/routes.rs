@@ -40,23 +40,34 @@ fn prepare(race: &str, class: &str, to_level: i64, params: &[&str]) -> Prepared 
 
 /// The same for a character met in game (`start`).
 fn prepare_from(race: &str, class: &str, to_level: i64, params: &[&str], start: Option<StartState>) -> Prepared {
-    prepare_group(race, class, to_level, params, start, &[])
+    prepare_group(race, class, to_level, params, start, vec![])
 }
 
-/// The same leveling with other players (`group`: their classes).
+/// The same leveling with other players (`mates`).
 fn prepare_group(
     race: &str,
     class: &str,
     to_level: i64,
     params: &[&str],
     start: Option<StartState>,
-    group: &[&str],
+    mates: Vec<StartState>,
 ) -> Prepared {
     prepare_request(&PlanRequest {
-        group: group.iter().map(|c| (*c).to_owned()).collect(),
+        mates,
         start,
         ..request(race, class, to_level, params)
     })
+}
+
+/// A player as its addon would record it: race ID, class, level, nothing done.
+fn player(name: &str, race: i64, class: &str, level: i64) -> StartState {
+    StartState {
+        name: name.into(),
+        race,
+        class: class.to_uppercase(),
+        level,
+        ..StartState::default()
+    }
 }
 
 fn overrides() -> Overrides {
@@ -75,7 +86,7 @@ fn request(race: &str, class: &str, to_level: i64, params: &[&str]) -> PlanReque
         required_class_quests: None,
         professions: vec![],
         locale: None,
-        group: vec![],
+        mates: vec![],
         start: None,
     }
 }
@@ -1865,7 +1876,8 @@ fn objective_is_done_at_its_best_place() {
 /// character's: a warrior leveling with a warlock goes for the felsteed.
 #[test]
 fn group_class_quests_are_required() {
-    let p = prepare_group("human", "warrior", 40, &[], None, &["warlock"]);
+    let (warrior, warlock) = (player("A", 1, "warrior", 10), player("B", 1, "warlock", 10));
+    let p = prepare_group("human", "warrior", 40, &[], Some(warrior), vec![warlock]);
     let felsteed: Vec<bool> = p
         .model
         .quests
@@ -1905,46 +1917,94 @@ fn pet_quest_moves_early_within_its_slack() {
     assert!(strict <= 0.5, "{strict} s without slack");
 }
 
-/// A companion of a class the character's race cannot play is of a race that can: a human
-/// leveling with a druid plans the druid's Aquatic Form, a night elf quest, and its chain.
+/// Each player keeps its own race: a night elf druid with a human warrior brings the druid's
+/// Aquatic Form (a night elf quest), not the quests of races nobody plays.
 #[test]
-fn companion_class_quests_of_its_race() {
-    let p = prepare_group("human", "warrior", 30, &[], None, &["druid"]);
-    let aquatic: Vec<bool> = p
-        .model
-        .quests
-        .iter()
+fn each_player_keeps_its_race() {
+    let (warrior, druid) = (player("A", 1, "warrior", 10), player("B", 4, "druid", 10));
+    let p = prepare_group("human", "warrior", 30, &[], Some(warrior), vec![druid]);
+    let aquatic: Vec<bool> = (p.model.quests.iter())
         .filter(|q| q.name == "Aquatic Form")
         .map(|q| q.mandatory)
         .collect();
     assert_eq!(aquatic, [true]);
-}
-
-/// Each companion keeps its own race: adding a druid (a night elf for a human) does not bring
-/// the night elf variants of the hunter's quests (the hunter is a dwarf, as without the druid).
-#[test]
-fn each_companion_keeps_its_race() {
-    let mandatory = |group: &[&str]| -> std::collections::HashMap<i64, String> {
-        let p = prepare_group("human", "warrior", 30, &[], None, group);
-        p.model
-            .quests
-            .iter()
-            .filter(|q| q.mandatory)
-            .map(|q| (q.id, q.name.clone()))
-            .collect()
-    };
-    let hunter = mandatory(&["hunter"]);
-    let both = mandatory(&["hunter", "druid"]);
-    assert!(!hunter.is_empty());
-    // The druid brings its own quests and their chains, no other variant of the hunter's.
-    let hunter_names: std::collections::HashSet<&String> = hunter.values().collect();
-    for (id, name) in &both {
+    // The druid's quest is for it only (the second member), the warrior's own for it only.
+    let of = |name: &str| p.model.quests.iter().find(|q| q.name == name).map(|q| q.members);
+    assert_eq!(of("Aquatic Form"), Some(0b10));
+    // No dwarf, gnome or Horde race in the group: none of their own quests.
+    let others = fg_route::model::race_bit(3) | fg_route::model::race_bit(7) | fg_route::model::race_bit(2);
+    let conn = database();
+    for q in &p.model.quests {
+        let races: Option<i64> = conn
+            .query_row("SELECT races_mask FROM m_quest WHERE id = ?1", [q.id], |r| r.get(0))
+            .unwrap();
+        let races = races.unwrap_or(0);
         assert!(
-            hunter.contains_key(id) || !hunter_names.contains(name),
-            "{name} ({id}): a hunter quest of another race required with the druid"
+            races == 0 || races & !others != 0,
+            "{} ({}): of a race nobody plays",
+            q.name,
+            q.id
         );
     }
-    assert!(hunter.keys().all(|id| both.contains_key(id)));
+}
+
+/// A group guide needs every player at level 10 and of one faction, five players at most.
+#[test]
+fn group_guides_have_rules() {
+    let fails = |start: StartState, mates: Vec<StartState>| {
+        let req = PlanRequest {
+            start: Some(start),
+            mates,
+            ..request("human", "warrior", 30, &[])
+        };
+        let err = job::prepare(&database(), &overrides(), &req, &|_| {}).err();
+        err.map(|e| e.to_string()).unwrap_or_default()
+    };
+    let low = fails(player("A", 1, "warrior", 12), vec![player("B", 1, "mage", 9)]);
+    assert!(low.contains("level 10"), "{low}");
+    let horde = fails(player("A", 1, "warrior", 12), vec![player("B", 2, "warrior", 12)]);
+    assert!(horde.contains("faction"), "{horde}");
+    let six = fails(
+        player("A", 1, "warrior", 12),
+        (0..5).map(|k| player(&format!("B{k}"), 1, "mage", 12)).collect(),
+    );
+    assert!(six.contains("at most"), "{six}");
+    let twice = fails(player("A", 1, "warrior", 12), vec![player("A", 1, "warrior", 12)]);
+    assert!(twice.contains("twice"), "{twice}");
+}
+
+/// The group's guide is planned for the player with the least XP, whoever made it.
+#[test]
+fn a_group_guide_is_planned_for_the_one_behind() {
+    let (warrior, mage) = (player("A", 1, "warrior", 14), player("B", 1, "mage", 12));
+    let p = prepare_group("human", "warrior", 20, &[], Some(warrior), vec![mage]);
+    assert_eq!(p.profile.class_name, "Mage");
+    assert_eq!(p.profile.from_level, 12);
+    assert_eq!(p.model.initial.mates.len(), 1);
+    assert_eq!(p.model.initial.mates[0].level, 14);
+}
+
+/// A quest a player did already stays for the others; one everybody did is out of the guide.
+#[test]
+fn quests_done_by_some_stay_for_the_others() {
+    let pick = prepare_from("human", "warrior", 20, &[], Some(player("A", 1, "warrior", 10)));
+    let mut ids = pick
+        .model
+        .quests
+        .iter()
+        .filter(|q| q.members & 1 != 0 && q.level <= 10)
+        .map(|q| q.id);
+    let (both, one) = (ids.next().unwrap(), ids.next().unwrap());
+    let mut a = player("A", 1, "warrior", 10);
+    a.completed = vec![both, one];
+    let mut b = player("B", 1, "warrior", 10);
+    b.completed = vec![both];
+    let p = prepare_group("human", "warrior", 20, &[], Some(a), vec![b]);
+    let index = |id: i64| p.model.index[&id];
+    assert!(p.model.initial.turned.contains(&index(both)));
+    assert!(!p.model.initial.turned.contains(&index(one)));
+    // For B only (A and B have the same XP: A, the guide's character, is planned for).
+    assert_eq!(p.model.initial.need(index(one)), 0b10);
 }
 
 /// A guide is saved without a language: it is written in any of them when shown or installed.
@@ -2350,4 +2410,75 @@ fn limited_supply_follows_the_crowd() {
         vendor > auction,
         "crowded server: {vendor} at the vendor, {auction} at the auction house"
     );
+}
+
+/// A group takes on what its weakest class does at each level: its curve is never above the
+/// curve of any of its classes.
+#[test]
+fn a_group_takes_on_what_its_weakest_class_does() {
+    let curve = |race: &str, id: i64, class: &str| {
+        prepare_from(race, class, 25, &[], Some(player("A", id, class, 12)))
+            .params
+            .class_curve
+    };
+    let (warrior, mage) = (curve("orc", 2, "warrior"), curve("undead", 5, "mage"));
+    let group = prepare_group(
+        "orc",
+        "warrior",
+        25,
+        &[],
+        Some(player("A", 2, "warrior", 12)),
+        vec![player("B", 5, "mage", 12)],
+    )
+    .params
+    .class_curve;
+    for (l, g) in group.iter().enumerate() {
+        assert!(*g <= warrior[l] + 1e-9 && *g <= mage[l] + 1e-9, "level {l}");
+    }
+    assert!(group.iter().zip(&warrior).any(|(g, w)| g < w) || group.iter().zip(&mage).any(|(g, m)| g < m));
+}
+
+/// A group guide carries its players to the addon, each step where each of them is, and who
+/// the steps not for everyone are for.
+#[test]
+fn a_group_guide_tells_the_addon_its_players() {
+    let pick = prepare_from("human", "warrior", 13, &[], Some(player("A-Realm", 1, "warrior", 10)));
+    let done: Vec<i64> = (pick.model.quests.iter())
+        .filter(|q| q.members & 1 != 0 && q.level <= 10)
+        .take(3)
+        .map(|q| q.id)
+        .collect();
+    let mut a = player("A-Realm", 1, "warrior", 10);
+    a.completed.clone_from(&done);
+    let request = PlanRequest {
+        start: Some(a),
+        mates: vec![player("B-Realm", 1, "mage", 10)],
+        ..request("human", "warrior", 11, &["effort=0"])
+    };
+    let outcome = job::plan(&database(), &overrides(), &request, &|_| {}).unwrap();
+    let route = &outcome.route;
+    let names: Vec<&str> = route.players.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["A-Realm", "B-Realm"]);
+    assert!(
+        route
+            .steps
+            .iter()
+            .filter(|s| s.level > 0)
+            .all(|s| s.party.len() == 2 || s.event.is_none())
+    );
+    let lua = fg_route::export::to_lua(std::slice::from_ref(route));
+    assert!(
+        lua.contains(r#"players = { { n = "A-Realm", race = 1, class = 1 }, { n = "B-Realm", race = 1, class = 8 } }"#)
+    );
+    assert!(lua.contains("gp = { "));
+    // The mage's spells, for its own addon (the guide's are the warrior's).
+    let mage = route.class_spells.iter().find(|(c, _)| *c == 8).map(|(_, s)| s.len());
+    assert!(mage.is_some_and(|n| n > 0), "{:?}", route.class_spells);
+    assert!(lua.contains("classSpells = { [8] = { "));
+    // A quest A did already, if the guide takes it, is B's only.
+    for s in &route.steps {
+        if s.quest.is_some_and(|q| done.contains(&q)) {
+            assert_eq!(s.members, Some(0b10), "{:?}", s.quest_name);
+        }
+    }
 }

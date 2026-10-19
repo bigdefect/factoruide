@@ -52,6 +52,7 @@ pub(crate) mod tests;
 pub use alns::ALNS_OPS;
 pub use combat::Combat;
 pub use edit::{Edit, Edited, EditedStep, Farmed, Outcome};
+pub use evaluate::End;
 pub use follow::{Followed, Want};
 pub(crate) use on_the_way::segment_dist;
 pub use places::Places;
@@ -267,11 +268,23 @@ impl<'a> Planner<'a> {
             level,
             xp: init.xp.min(self.rules().to_next_level(level) - 1).max(0),
             rested: init.rested,
+            mates: std::array::from_fn(|k| {
+                init.mates.get(k).map_or_else(state::MateXp::default, |m| {
+                    let level = m.level.max(1);
+                    state::MateXp {
+                        level,
+                        xp: m.xp.min(self.rules().to_next_level(level) - 1).max(0),
+                        rested: m.rested.max(0),
+                    }
+                })
+            }),
+            order: std::array::from_fn(|k| k as u8),
+            synced: true,
             stock: vec![0.0; self.model.loot.items.len()],
             known: init.known,
             bind: init.bind.unwrap_or(self.model.start_inn),
-            hearth_ready: 0.0,
-            recall_ready: 0.0,
+            hearth_ready: if init.unbound { f64::INFINITY } else { 0.0 },
+            recall_ready: if init.unbound { f64::INFINITY } else { 0.0 },
             trained: init.trained.unwrap_or(level).min(level),
             dungeons: 0,
             accepted: Flags::new(n),
@@ -330,6 +343,7 @@ impl<'a> Planner<'a> {
             }
         }
         self.growth().refresh_power(&mut s);
+        s.synced = self.growth().spread(&s) <= self.params.group_sync_window;
         s.forced_left = (self.model.quests.iter().enumerate())
             .filter(|(i, q)| q.zone_forced && !s.turned[*i])
             .count() as u32;
@@ -354,10 +368,12 @@ impl<'a> Planner<'a> {
         (self.model.initial.accepted.iter().copied()).filter(|&i| planned.left(i))
     }
 
-    /// Whether the guide is over: the target level reached, the quests of the forced zones
+    /// Whether the guide is over: the target level reached by everyone, the quests of the forced zones
     /// done and the reputation goals met.
     pub(crate) fn ended(&self, s: &State) -> bool {
-        s.level >= self.profile.to_level && s.forced_left == 0 && self.reputation_missing(s) <= 0.0
+        self.growth().lowest_level(s) >= self.profile.to_level
+            && s.forced_left == 0
+            && self.reputation_missing(s) <= 0.0
     }
 
     /// Experience rules of the guide's game version.

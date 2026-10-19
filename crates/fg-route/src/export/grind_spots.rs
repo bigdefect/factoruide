@@ -117,7 +117,12 @@ fn move_grinds(writer: &StepWriter<'_>, guide: &mut Guide<'_>) {
     while i < guide.steps.len() {
         let (grind, before) = (&guide.steps[i], &guide.steps[i - 1]);
         let level = before.level;
-        if grind.kind != StepKind::Grind || grind.xp.is_some() || grindable(writer, grind, level) {
+        // A group's players catching up stay where they are (the others wait there).
+        if grind.kind != StepKind::Grind
+            || grind.xp.is_some()
+            || grind.members.is_some()
+            || grindable(writer, grind, level)
+        {
             i += 1;
             continue;
         }

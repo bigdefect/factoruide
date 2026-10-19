@@ -30,13 +30,34 @@ pub struct PlanRequest {
     /// Language of the guide texts (enUS by default; English where a name is not translated).
     #[serde(default)]
     pub locale: Option<String>,
-    /// Classes of the other players leveling with the character (empty: solo).
-    #[serde(default)]
-    pub group: Vec<String>,
     /// The character as the addon recorded it in game: the route goes on from there (its level
     /// replaces `from_level`).
     #[serde(default)]
     pub start: Option<super::StartState>,
+    /// The other players of a group guide, as their addon recorded them (empty: solo). The guide
+    /// is the same for everyone (see `members`).
+    #[serde(default)]
+    pub mates: Vec<super::StartState>,
+}
+
+/// Players in a group guide, the character included.
+pub const GROUP_MAX: usize = 5;
+/// Level every member of a group guide must have reached.
+pub const GROUP_MIN_LEVEL: i64 = 10;
+
+impl PlanRequest {
+    /// The members of a group guide (empty alone), the one with the least XP first: the route
+    /// is planned for it, the others' XP followed beside (`Profile::mates`).
+    pub fn members(&self, rules: &crate::xp::Rules) -> Vec<&super::StartState> {
+        if self.mates.is_empty() {
+            return Vec::new();
+        }
+        let mut members: Vec<_> = self.start.iter().chain(&self.mates).collect();
+        let total = |m: &super::StartState| (1..m.level).map(|l| rules.to_next_level(l)).sum::<i64>() + m.xp;
+        // Stable: the guide's own character first among equals.
+        members.sort_by_key(|m| total(m));
+        members
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +77,9 @@ pub struct PlanOutcome {
     /// up...); guides saved before only have the route's stops, which the editor completes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub explicit: bool,
+    /// The character at the end of the guide, as its addon would record it (not saved).
+    #[serde(skip)]
+    pub end: Option<super::StartState>,
 }
 
 impl PlanOutcome {

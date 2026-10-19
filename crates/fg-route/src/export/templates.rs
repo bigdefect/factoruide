@@ -492,6 +492,20 @@ pub(super) const TEMPLATES: &[(&str, [&str; 9])] = &[
         ],
     ),
     (
+        "group.catch_up",
+        [
+            "{players}: kill mobs around to catch up with the group (~{minutes} min), the others wait",
+            "{players} : tuez des mobs dans le coin pour rattraper le groupe (~{minutes} min), les autres attendent",
+            "{players}: Mobs in der Umgebung töten, um zur Gruppe aufzuschließen (~{minutes} Min.), die anderen warten",
+            "{players}: matad monstruos por la zona para alcanzar al grupo (~{minutes} min), los demás esperan",
+            "{players}: matem monstros na área para alcançar o grupo (~{minutes} min), os outros esperam",
+            "{players}: убейте мобов поблизости, чтобы догнать группу (~{minutes} мин), остальные ждут",
+            "{players}: 주변 몹을 처치해 그룹을 따라잡으세요 (~{minutes}분), 나머지는 대기",
+            "{players}：击杀附近的怪物以追上队伍（约{minutes}分钟），其他人等待",
+            "{players}：擊殺附近的怪物以追上隊伍（約{minutes}分鐘），其他人等待",
+        ],
+    ),
+    (
         "grind.mobs",
         [
             "Kill {mobs} mobs around (~{minutes} min)",

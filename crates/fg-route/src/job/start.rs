@@ -183,12 +183,7 @@ impl StartState {
         if init.bind.is_none() && self.bind.is_some() {
             notes.push("hearthstone place not found: bind it again in game to record it".into());
         }
-        let flights: HashSet<i64> = self.flights.iter().copied().collect();
-        for (n, node) in world.taxi_nodes.iter().enumerate().take(128) {
-            if flights.contains(&node.id) {
-                init.known |= 1u128 << n;
-            }
-        }
+        init.known = self.known_flights(world);
         init.trained = model
             .power
             .as_ref()
@@ -200,9 +195,65 @@ impl StartState {
         init
     }
 
+    /// The character where `end` leaves it, as its addon would record it (a player made up from
+    /// a guide, to plan the next one from there: a group's players in tests). `self` is the
+    /// character at the start of the guide (the quests done before it are kept).
+    #[must_use]
+    pub fn after(&self, model: &Model, world: &World, rules: &crate::xp::Rules, end: &crate::plan::End) -> Self {
+        let mut completed: Vec<i64> = self.completed.clone();
+        for &i in &end.turned {
+            let id = model.quests[i].id;
+            if !completed.contains(&id) {
+                completed.push(id);
+            }
+        }
+        let map = |zone: i64, pos: &crate::world::Pos| {
+            world.to_map(zone, pos).map(|p| MapPos {
+                map: p.ui_map,
+                x: p.x,
+                y: p.y,
+            })
+        };
+        let inn = &model.inns[end.bind];
+        Self {
+            level: end.level,
+            xp: end.xp,
+            xp_max: rules.to_next_level(end.level),
+            rested: end.rested,
+            resting: false,
+            completed,
+            log: (end.log.iter())
+                .map(|&(i, complete)| LogQuest {
+                    id: model.quests[i].id,
+                    complete,
+                    objectives: vec![],
+                })
+                .collect(),
+            position: map(end.zone, &end.pos),
+            instance: false,
+            bind: Some(Bind {
+                name: inn.name.clone(),
+                position: map(inn.zone, &inn.pos),
+            }),
+            flights: (world.taxi_nodes.iter().enumerate().take(128))
+                .filter(|(n, _)| end.known & (1u128 << n) != 0)
+                .map(|(_, node)| node.id)
+                .collect(),
+            ..self.clone()
+        }
+    }
+
+    /// The flight paths known, a bit per taxi node.
+    pub(super) fn known_flights(&self, world: &World) -> u128 {
+        let flights: HashSet<i64> = self.flights.iter().copied().collect();
+        (world.taxi_nodes.iter().enumerate().take(128))
+            .filter(|(_, node)| flights.contains(&node.id))
+            .fold(0, |known, (n, _)| known | 1u128 << n)
+    }
+
     /// The inn the hearthstone is bound to: the closest to where the binding was seen, else
     /// one in a place of that name.
-    fn bind_inn(&self, model: &Model, world: &World) -> Option<usize> {
+    pub(super) fn bind_inn(&self, model: &Model, world: &World) -> Option<usize> {
         let bind = self.bind.as_ref()?;
         if let Some(p) = bind.position.and_then(|p| at(world, p)) {
             let closest = model

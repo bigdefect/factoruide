@@ -918,7 +918,9 @@ impl<'r> Replay<'r> {
                         at = p;
                     }
                 }
-                Event::Grind { seconds, near, .. } | Event::GrindMobs { seconds, near, .. } => {
+                Event::Grind { seconds, near, .. }
+                | Event::GrindMobs { seconds, near, .. }
+                | Event::CatchUp { seconds, near, .. } => {
                     let walk = (e.time - t - seconds).max(0.0);
                     if apart(&at, near) {
                         let l = leg(walk_mode, &at, near, std::mem::take(&mut via));

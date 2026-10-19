@@ -29,11 +29,22 @@ pub struct Profile {
     pub professions: Vec<crate::profession::ProfessionGoal>,
     /// Language of the guide texts (enUS, frFR, deDE...).
     pub locale: Option<String>,
-    /// Classes of the other players leveling with the character (ChrClasses IDs).
-    pub group_class_ids: Vec<i64>,
-    /// The race deduced for each other player's class the character's race cannot play (a night
-    /// elf for a human's druid): (class ID, race bit). Its class quests are of that race.
-    pub group_races: Vec<(i64, i64)>,
+    /// The other players of a group guide (none: a solo guide). The character is the one with
+    /// the least XP; the route is the same for everyone.
+    pub mates: Vec<Mate>,
+    /// The character's "Name-Realm" in a group guide (empty alone).
+    pub player: String,
+}
+
+/// Another player of a group guide.
+#[derive(Debug, Clone)]
+pub struct Mate {
+    /// "Name-Realm".
+    pub name: String,
+    pub race_id: i64,
+    pub class_id: i64,
+    /// Its class trainer spells that count for power (see overrides/spells.toml).
+    pub spell_weights: Vec<(String, crate::power::SpellWeight)>,
 }
 
 /// Quest race bit of a race in the quest data's Forever encoding (Skyborne uses bits 32/33).
@@ -60,27 +71,39 @@ impl Profile {
         1 << (self.class_id - 1)
     }
 
-    /// Race bits a quest of classes `classes` is taken for: the character's, or for another
-    /// player's class its race cannot play, the race deduced for that class only.
-    pub fn quest_races(&self, classes: Option<i64>) -> i64 {
-        let mask = classes.unwrap_or(0);
-        if mask == 0 || mask & self.class_bit() != 0 {
-            return self.race_bit();
-        }
-        let deduced = self
-            .group_races
-            .iter()
-            .filter(|(class, _)| mask & (1 << (class - 1)) != 0)
-            .fold(0, |m, (_, race)| m | race);
-        if deduced == 0 { self.race_bit() } else { deduced }
+    /// Race and class bits of each member of the group, the character first.
+    pub fn members(&self) -> impl Iterator<Item = (i64, i64)> + '_ {
+        std::iter::once((self.race_bit(), self.class_bit()))
+            .chain(self.mates.iter().map(|m| (race_bit(m.race_id), 1 << (m.class_id - 1))))
+    }
+
+    /// The members (a bit each, the character's 1) a quest of races `races` and classes
+    /// `classes` is for.
+    pub fn members_of(&self, races: Option<i64>, classes: Option<i64>) -> u8 {
+        let (races, classes) = (races.unwrap_or(0), classes.unwrap_or(0));
+        (self.members().enumerate())
+            .filter(|(_, (race, class))| (races == 0 || races & race != 0) && (classes == 0 || classes & class != 0))
+            .fold(0, |m, (k, _)| m | 1 << k)
+    }
+
+    /// Names of the members of the group in `members` (a bit each, the character's 1), without
+    /// their realm.
+    pub fn member_names(&self, members: u8) -> Vec<String> {
+        let short = |n: &str| n.split('-').next().unwrap_or(n).to_owned();
+        (std::iter::once(&self.player)
+            .chain(self.mates.iter().map(|m| &m.name))
+            .enumerate())
+        .filter(|(k, _)| members & (1 << k) != 0)
+        .map(|(_, n)| short(n))
+        .collect()
     }
 
     /// Distinct classes of the group, the character's first.
     pub fn class_ids(&self) -> Vec<i64> {
         let mut ids = vec![self.class_id];
-        for id in &self.group_class_ids {
-            if !ids.contains(id) {
-                ids.push(*id);
+        for m in &self.mates {
+            if !ids.contains(&m.class_id) {
+                ids.push(m.class_id);
             }
         }
         ids
@@ -377,6 +400,8 @@ pub struct Quest {
     /// Reputation points its turn-in gives the character, by Faction ID (the human's Diplomacy
     /// counted).
     pub reputation: Vec<(i64, f64)>,
+    /// The members of the group it is for (race and class), a bit each: the character's 1.
+    pub members: u8,
 }
 
 pub struct Model {
@@ -418,6 +443,9 @@ pub struct Model {
     pub loot: super::CommonLoot,
     /// Character power data (gear, class spells); `None` without the data (TBC).
     pub power: Option<crate::power::PowerModel>,
+    /// The spells worth learning of each other player of a group (`Profile::mates` order):
+    /// every rank of those its class counts for power.
+    pub mate_spells: Vec<Vec<i64>>,
     /// Items each quest gives (indexes in `power.items`): always, and one of the choices.
     pub rewards: Vec<(Vec<u16>, Vec<u16>)>,
     /// Items each dungeon's bosses drop, with the chance the character gets each.
@@ -491,12 +519,43 @@ pub struct Initial {
     pub log: Vec<(i64, String)>,
     /// Points with the faction of each reputation goal (`Params::reputation_goals`) at the start.
     pub reputation: Vec<f64>,
+    /// The other players of a group guide, as `Profile::mates`.
+    pub mates: Vec<MateStart>,
+    /// In a group: the members each quest is still for (a bit each, the character's 1), not
+    /// done yet by them nor closed (another race or class, an exclusive one done). Empty alone.
+    pub need: Vec<u8>,
+    /// In a group whose hearthstones are bound to different inns: none can be used before
+    /// everyone binds it at the same inn.
+    pub unbound: bool,
+}
+
+/// Where another player of a group guide starts.
+#[derive(Debug, Clone, Default)]
+pub struct MateStart {
+    pub level: i64,
+    pub xp: i64,
+    pub rested: i64,
+    /// Every quest it turned in.
+    pub completed: HashSet<i64>,
 }
 
 impl Initial {
     /// Whether quest `id`, which the model does not have, was turned in before the route.
     pub fn done_outside(&self, id: i64, from_level: i64) -> bool {
         self.completed.as_ref().map_or(from_level > 1, |c| c.contains(&id))
+    }
+
+    /// The members quest `i` is still for (see `need`): the character only, alone.
+    pub fn need(&self, i: usize) -> u8 {
+        self.need.get(i).copied().unwrap_or(1)
+    }
+
+    /// Whether member `m` (0: the character) turned in quest `id` before the route.
+    pub fn done_by(&self, m: usize, id: i64) -> bool {
+        match m {
+            0 => self.completed.as_ref().is_some_and(|c| c.contains(&id)),
+            m => self.mates.get(m - 1).is_some_and(|mate| mate.completed.contains(&id)),
+        }
     }
 }
 

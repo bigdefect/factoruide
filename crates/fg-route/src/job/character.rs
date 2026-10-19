@@ -1,30 +1,45 @@
-//! The character a request plans for: race, class, the classes leveling with it, and what the
+//! The character a request plans for: race, class, the players of its group, and what the
 //! configuration says about them (class quests, powers, spells).
 
+use super::StartState;
 use super::options::race_classes;
 use super::overrides::{Overrides, RaceDef};
-use super::request::PlanRequest;
-use crate::model::Profile;
+use super::request::{GROUP_MAX, GROUP_MIN_LEVEL, PlanRequest};
+use crate::model::{Mate, Profile};
 use crate::params::Params;
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 use std::collections::HashMap;
 
 pub(super) fn character(conn: &Connection, overrides: &Overrides, req: &PlanRequest) -> Result<(Profile, Params)> {
-    let race_key = req.race.to_lowercase().replace([' ', '-'], "");
+    let mut params = req.params.clone().unwrap_or_else(|| overrides.params.clone());
+    let members = req.members(params.edition.rules());
+    check_group(overrides, req, &members)?;
+    // A group is planned for the member with the least XP.
+    let (race_key, class_key) = match members.first() {
+        Some(m) => (race_key_of(overrides, m.race)?, m.class.clone()),
+        None => (req.race.to_lowercase().replace([' ', '-'], ""), req.class.clone()),
+    };
     let Some(race) = overrides.races.get(&race_key) else {
         bail!("unknown race {}", req.race);
     };
-    let (class_id, class_name) = class_of(conn, &req.class)?;
-    check_playable(conn, race, req, class_id, &class_name)?;
-    let group: Vec<(i64, String)> = req
-        .group
-        .iter()
-        .take(4)
-        .map(|c| class_of(conn, c))
+    let (class_id, class_name) = class_of(conn, &class_key)?;
+    check_playable(conn, race, &race_key, class_id, &class_name)?;
+    let mates: Vec<Mate> = (members.iter().skip(1))
+        .map(|m| {
+            let (class_id, class_name) = class_of(conn, &m.class)?;
+            Ok(Mate {
+                name: m.name.clone(),
+                race_id: m.race,
+                class_id,
+                spell_weights: (overrides.spells.get(&class_name.to_lowercase()))
+                    .map(|w| w.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    .unwrap_or_default(),
+            })
+        })
         .collect::<Result<_>>()?;
-    let mut params = req.params.clone().unwrap_or_else(|| overrides.params.clone());
-    params.group_size = 1 + group.len() as i64;
+    let group: Vec<String> = members.iter().skip(1).map(|m| m.class.to_lowercase()).collect();
+    params.group_size = 1 + mates.len() as i64;
     let class = class_name.to_lowercase();
     // The class's curve and gear dependence, or the player's own (advanced settings).
     let power = overrides.class_power.get(&class).cloned().unwrap_or_default();
@@ -35,7 +50,19 @@ pub(super) fn character(conn: &Connection, overrides: &Overrides, req: &PlanRequ
     };
     params.class_curve = super::overrides::curve_by_level(&points, req.to_level.max(100));
     params.gear_dependence = params.power_gear.or(power.gear).unwrap_or(1.0);
-    let from_level = req.start.as_ref().map_or(req.from_level, |s| s.level);
+    // A group takes on what its weakest class does at each level: the higher mobs, the more
+    // that one misses.
+    if params.power_curve.is_empty() {
+        for other in &group {
+            let points = overrides.class_power.get(other).cloned().unwrap_or_default().points()?;
+            let curve = super::overrides::curve_by_level(&points, req.to_level.max(100));
+            for (mine, theirs) in params.class_curve.iter_mut().zip(curve) {
+                *mine = mine.min(theirs);
+            }
+        }
+    }
+    let start = members.first().copied().or(req.start.as_ref());
+    let from_level = start.map_or(req.from_level, |s| s.level);
     if from_level >= req.to_level {
         bail!(
             "the character is level {from_level}: nothing to plan up to level {}",
@@ -43,7 +70,7 @@ pub(super) fn character(conn: &Connection, overrides: &Overrides, req: &PlanRequ
         );
     }
     let mut professions = req.professions.clone();
-    if let Some(start) = &req.start {
+    if let Some(start) = start {
         start.anchor_professions(&mut professions);
     }
     let profile = Profile {
@@ -76,40 +103,55 @@ pub(super) fn character(conn: &Connection, overrides: &Overrides, req: &PlanRequ
             .collect(),
         professions,
         locale: req.locale.clone(),
-        group_class_ids: group.iter().map(|(id, _)| *id).collect(),
-        group_races: group_races(conn, overrides, race, &group)?,
+        player: if mates.is_empty() {
+            String::new()
+        } else {
+            members[0].name.clone()
+        },
+        mates,
     };
     Ok((profile, params))
 }
 
-/// The race of each other player whose class the character's race cannot play: the first race
-/// of the faction that can (one per class, so that its class quests are not planned once per
-/// race), as (class ID, race bit).
-fn group_races(
-    conn: &Connection,
-    overrides: &Overrides,
-    race: &RaceDef,
-    group: &[(i64, String)],
-) -> Result<Vec<(i64, i64)>> {
-    let mut races = Vec::new();
-    let own = race_classes(conn, race.id)?;
-    for (class_id, _) in group {
-        let key: String = conn.query_row(
-            "SELECT lower(Filename) FROM client_chrclasses WHERE ID = ?1",
-            [class_id],
-            |r| r.get(0),
-        )?;
-        if own.is_empty() || own.contains(&key) || races.iter().any(|(c, _)| c == class_id) {
-            continue;
-        }
-        for other in overrides.races.values().filter(|r| r.faction == race.faction) {
-            if race_classes(conn, other.id)?.contains(&key) {
-                races.push((*class_id, crate::model::race_bit(other.id)));
-                break;
-            }
-        }
+/// The members of a group guide must be of the same faction, at least level `GROUP_MIN_LEVEL`,
+/// `GROUP_MAX` at most and each once.
+fn check_group(overrides: &Overrides, req: &PlanRequest, members: &[&StartState]) -> Result<()> {
+    if req.mates.is_empty() {
+        return Ok(());
     }
-    Ok(races)
+    if req.start.is_none() {
+        bail!("a group guide starts from the characters as the addon recorded them");
+    }
+    if members.len() > GROUP_MAX {
+        bail!("a group has {GROUP_MAX} players at most");
+    }
+    let mut faction = None;
+    for (k, m) in members.iter().enumerate() {
+        if m.level < GROUP_MIN_LEVEL {
+            bail!(
+                "{} is level {}: every player of a group guide must be level {GROUP_MIN_LEVEL} first",
+                m.name,
+                m.level
+            );
+        }
+        if members[..k].iter().any(|o| o.name == m.name) {
+            bail!("{} is twice in the group", m.name);
+        }
+        let f = overrides.races[&race_key_of(overrides, m.race)?].faction;
+        if faction.is_some_and(|g| g != f) {
+            bail!("the players of a group guide are all of the same faction");
+        }
+        faction = Some(f);
+    }
+    Ok(())
+}
+
+/// Key in `races.toml` of a race ID.
+fn race_key_of(overrides: &Overrides, race_id: i64) -> Result<String> {
+    (overrides.races.iter())
+        .find(|(_, r)| r.id == race_id)
+        .map(|(k, _)| k.clone())
+        .with_context(|| format!("unknown race ID {race_id}"))
 }
 
 /// Class ID and name from a class file name or name (mage, WARRIOR...).
@@ -123,7 +165,7 @@ fn class_of(conn: &Connection, class: &str) -> Result<(i64, String)> {
 }
 
 /// Only the combinations the game offers (when the client data lists them).
-fn check_playable(conn: &Connection, race: &RaceDef, req: &PlanRequest, class_id: i64, class_name: &str) -> Result<()> {
+fn check_playable(conn: &Connection, race: &RaceDef, race_key: &str, class_id: i64, class_name: &str) -> Result<()> {
     let allowed = race_classes(conn, race.id)?;
     let class_key: String = conn.query_row(
         "SELECT lower(Filename) FROM client_chrclasses WHERE ID = ?1",
@@ -133,7 +175,7 @@ fn check_playable(conn: &Connection, race: &RaceDef, req: &PlanRequest, class_id
     if !allowed.is_empty() && !allowed.contains(&class_key) {
         bail!(
             "{} cannot be {} (playable: {})",
-            req.race,
+            race_key,
             class_name,
             allowed.join(", ")
         );
@@ -146,14 +188,14 @@ fn required_class_quests(
     defaults: &HashMap<String, Vec<String>>,
     req: &PlanRequest,
     class: &str,
-    group: &[(i64, String)],
+    group: &[String],
 ) -> Vec<String> {
     let mut quests = req
         .required_class_quests
         .clone()
         .unwrap_or_else(|| defaults.get(class).cloned().unwrap_or_default());
-    for (_, name) in group {
-        for q in defaults.get(&name.to_lowercase()).into_iter().flatten() {
+    for name in group {
+        for q in defaults.get(name).into_iter().flatten() {
             if !quests.contains(q) {
                 quests.push(q.clone());
             }

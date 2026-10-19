@@ -315,6 +315,14 @@ pub struct Params {
     pub group_kill_speed: f64,
     /// Quest items drop for every group member (else each one loots their own).
     pub group_shared_drops: bool,
+    /// Levels a group's players may be apart freely: the guide gets them within it first.
+    pub group_sync_window: f64,
+    /// Score of each second the group's players are a level further apart than
+    /// `group_sync_window` (seconds).
+    pub group_sync_weight: f64,
+    /// Levels a group's players are apart at most once together: further, the players behind
+    /// kill mobs on their own to catch up (`Event::CatchUp`).
+    pub group_sync_max: f64,
     /// Distance from an area's center at which passing by discovers it (exploration XP).
     pub explore_radius: f64,
     /// Game version: experience rules, level cap.
@@ -451,6 +459,9 @@ impl Default for Params {
             group_size: 1,
             group_kill_speed: 0.8,
             group_shared_drops: true,
+            group_sync_window: 0.5,
+            group_sync_weight: 1.0,
+            group_sync_max: 1.0,
             explore_radius: 250.0,
             edition: crate::xp::Edition::Forever,
         }

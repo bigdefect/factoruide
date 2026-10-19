@@ -1,5 +1,5 @@
-//! Which quests the planner considers: those of the character's race, class (or a required
-//! class quest of the group) and levels, then the rules that leave quests out.
+//! Which quests the planner considers: those of the race and class of a member of the group (the
+//! character alone) and of its levels, then the rules that leave quests out.
 
 use super::builder::{QuestBuilder, Skip};
 use super::sources::QuestRow;
@@ -13,27 +13,12 @@ impl QuestBuilder<'_> {
         let profile = self.profile;
         let level = r.level.unwrap_or(1).max(1);
         let min_level = r.min_level.unwrap_or(1).max(1);
-        let group_class_quest = self.sources.class_quest_ids.contains(&r.id)
-            && r.classes.is_some_and(|m| m & profile.group_class_mask() != 0);
-        // Another player's class quest is of the race deduced for its class when the
-        // character's race cannot play it (`Profile::quest_races`).
-        let races = if group_class_quest && self.other_class(r) {
-            profile.quest_races(r.classes)
-        } else {
-            profile.race_bit()
-        };
-        let other_race = r.races.is_some_and(|m| m != 0 && m & races == 0);
-        !other_race
-            && (!self.other_class(r) || group_class_quest)
+        // A quest of a member's own race and class (in a group, the others' too: done together,
+        // their XP goes to those it is for).
+        profile.members_of(r.races, r.classes) != 0
             && min_level <= profile.to_level
             && level <= profile.to_level + self.params.max_quest_above
             && level + 10 >= profile.from_level
-    }
-
-    /// In a group, quests of the other classes count only as required class quests (done
-    /// together, but their XP goes to the other player).
-    pub(super) fn other_class(&self, r: &QuestRow) -> bool {
-        r.classes.is_some_and(|m| m != 0 && m & self.profile.class_bit() == 0)
     }
 
     /// Profession quests: kept when the profile levels that profession, accepted once the skill

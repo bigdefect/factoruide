@@ -49,7 +49,7 @@ fn request() -> PlanRequest {
         required_class_quests: None,
         professions: vec![],
         locale: None,
-        group: vec![],
+        mates: vec![],
         start: None,
     }
 }

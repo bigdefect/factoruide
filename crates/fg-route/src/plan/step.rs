@@ -60,10 +60,11 @@ impl Planner<'_> {
         let (due, late) = match self.model.power.as_ref().filter(|p| p.has_spells()) {
             Some(p) => {
                 let gain = p.train_gain(s.trained, s.level);
-                let group = self.profile.group_class_ids.is_empty();
+                // In a group, everyone trains at the cadence (the others' spells are not known).
+                let group = !self.profile.mates.is_empty();
                 (
-                    gain >= self.params.train_min_gain || (!group && every),
-                    gain >= self.params.train_trip_gain || (!group && every_late),
+                    gain >= self.params.train_min_gain || (group && every),
+                    gain >= self.params.train_trip_gain || (group && every_late),
                 )
             }
             None => (every, every_late),
@@ -193,9 +194,7 @@ impl Planner<'_> {
         s.turned.set(i as usize, true);
         s.log -= 1;
         s.started.retain(|&(q, _, _)| q != i);
-        let reward = self.growth().quest_reward(q, s.level);
-        s.spent.quest_xp += reward;
-        self.growth().gain(s, reward);
+        s.spent.quest_xp += self.growth().reward(s, i);
         self.growth().gain_power(s, i);
         if s.forced_left > 0 {
             let closed = (q.exclusive.iter())
@@ -245,6 +244,9 @@ impl Planner<'_> {
         self.abandon_hopeless(s, &mut record);
         let before = s.time;
         self.do_apply(s, stop, &mut record);
+        self.keep_lowest(s);
+        self.count_desync(s, s.time - before);
+        self.catch_up(s, &mut record);
         // Counted in the zone the stop ends in.
         let preferred = &self.params.preferred_zones;
         if !preferred.is_empty() && !preferred.contains(&s.zone) {
@@ -292,6 +294,138 @@ impl Planner<'_> {
         }
         self.while_here(s, record);
         self.train(s, record);
+    }
+
+    /// The lowest player of the group in the character's place (`State::order`): the quests
+    /// and mobs are those it can take on.
+    pub(crate) fn keep_lowest(&self, s: &mut State) {
+        let n = self.growth().mates();
+        let rules = self.rules();
+        let at = |level: i64, xp: i64| level as f64 + xp as f64 / rules.to_next_level(level).max(1) as f64;
+        let Some((k, lowest)) = (s.mates[..n].iter().enumerate())
+            .map(|(k, m)| (k, at(m.level, m.xp)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+        else {
+            return;
+        };
+        if lowest >= at(s.level, s.xp) {
+            return;
+        }
+        let m = s.mates[k];
+        let was = s.level;
+        s.mates[k] = super::state::MateXp {
+            level: s.level,
+            xp: s.xp,
+            rested: s.rested,
+        };
+        (s.level, s.xp, s.rested) = (m.level, m.xp, m.rested);
+        s.order.swap(0, k + 1);
+        if s.level != was {
+            s.grind_used = 0;
+            s.farm_used = 0;
+            self.growth().refresh_power(s);
+        }
+    }
+
+    /// A group's levels apart beyond the window during `seconds` (see `Breakdown::desync`).
+    fn count_desync(&self, s: &mut State, seconds: f64) {
+        if self.growth().mates() == 0 {
+            return;
+        }
+        let over = self.growth().spread(s) - self.params.group_sync_window;
+        if over <= 0.0 {
+            s.synced = true;
+        } else {
+            s.spent.desync += over * seconds;
+            if s.spent.sync_time >= s.time - seconds - 1e-9 {
+                s.spent.sync_time = s.time;
+            }
+        }
+    }
+
+    /// A group together once and now further apart than `group_sync_max`: the players behind
+    /// kill mobs of their level where they stand, on their own (each its own XP), until they
+    /// are within half the window of the one ahead (`Event::CatchUp`).
+    pub(crate) fn catch_up(&self, s: &mut State, record: &mut impl FnMut(&State, Event)) {
+        let growth = self.growth();
+        let n = growth.mates();
+        let spread = growth.spread(s);
+        if n == 0 || !s.synced || spread <= self.params.group_sync_max {
+            return;
+        }
+        let rules = self.rules();
+        let at = |level: i64, xp: i64| level as f64 + xp as f64 / rules.to_next_level(level).max(1) as f64;
+        let top = s.mates[..n]
+            .iter()
+            .map(|m| at(m.level, m.xp))
+            .fold(at(s.level, s.xp), f64::max);
+        // Reaching a little within the window, so that the next quest's rounding keeps them in.
+        let target = top - self.params.group_sync_window * 0.5;
+        // XP to `target` from (level, xp), and the time it takes alone.
+        let combat = self.combat();
+        let group = self.params.group_xp_share() * self.params.group_damage();
+        let need = |level: i64, xp: i64| -> (i64, f64) {
+            let (mut l, mut x, mut need, mut time) = (level, xp, 0, 0.0);
+            while at(l, x) < target && l < rules.max_level {
+                let bar = rules.to_next_level(l);
+                let to = ((target - l as f64).min(1.0) * bar as f64).ceil() as i64;
+                let gained = (to - x).max(0);
+                need += gained;
+                time += gained as f64 / (combat.grind_rate(l, s.bonus, &s.pos) / group);
+                if to >= bar {
+                    (l, x) = (l + 1, 0);
+                } else {
+                    x = to;
+                }
+            }
+            (need, time)
+        };
+        let mut members = 0u8;
+        let mut seconds = 0.0f64;
+        let (own, t) = need(s.level, s.xp);
+        if own > 0 {
+            members |= 1 << s.order[0];
+            seconds = seconds.max(t);
+        }
+        let mut gains = [0i64; super::state::MATES];
+        for (k, (m, g)) in s.mates[..n].iter().zip(&mut gains).enumerate() {
+            let (gain, t) = need(m.level, m.xp);
+            if gain > 0 {
+                members |= 1 << s.order[k + 1];
+                seconds = seconds.max(t);
+                *g = gain;
+            }
+        }
+        if members == 0 {
+            return;
+        }
+        for (k, &gain) in gains.iter().enumerate().take(n) {
+            let m = &mut s.mates[k];
+            m.xp += gain;
+            while m.level < rules.max_level && m.xp >= rules.to_next_level(m.level) {
+                m.xp -= rules.to_next_level(m.level);
+                m.level += 1;
+            }
+        }
+        if own > 0 {
+            s.spent.grind_xp += own;
+            s.grind_used += own;
+            growth.gain(s, own);
+        }
+        s.time += seconds;
+        s.spent.grinding += seconds;
+        s.spent.catch_up += seconds;
+        self.keep_lowest(s);
+        let (near, zone) = (s.pos, s.zone);
+        record(
+            s,
+            Event::CatchUp {
+                members,
+                seconds,
+                near,
+                zone,
+            },
+        );
     }
 
     /// Back to the inn the hearthstone is bound to, with the hearthstone or Astral Recall
@@ -433,6 +567,10 @@ impl Planner<'_> {
             Kind::Bind => {
                 s.bind = i;
                 s.time += 10.0;
+                // A group bound apart: everyone binds here, the hearthstone is usable.
+                if s.hearth_ready.is_infinite() {
+                    (s.hearth_ready, s.recall_ready) = (0.0, 0.0);
+                }
             }
             Kind::Hearth => {}
             Kind::Dungeon => self.run_dungeon(s, i),
@@ -554,6 +692,11 @@ impl Planner<'_> {
         if s.level < self.profile.to_level {
             self.grind_at_camps(s, self.profile.to_level, &mut record);
         }
+        // Another player of the group behind: a level more at a time until it is there too.
+        while self.growth().lowest_level(s) < self.profile.to_level && s.level < self.rules().max_level {
+            self.grind_at_camps(s, s.level + 1, &mut record);
+            self.keep_lowest(s);
+        }
         let (mut missing, mut zone) = (0, 0);
         for (i, q) in self.model.quests.iter().enumerate() {
             if q.mandatory && !s.rewarded(i) && !self.availability().alternative_done(s, q) {
@@ -607,6 +750,7 @@ pub(crate) fn recorder<'t>(trace: &'t mut Option<&mut Vec<Timed>>) -> impl FnMut
                 xp: s.xp,
                 power: s.level as f64 + s.bonus,
                 gear: s.gear_bonus,
+                party: s.party(),
             });
         }
     }

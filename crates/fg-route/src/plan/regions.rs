@@ -408,7 +408,7 @@ impl Planner<'_> {
                 || (!q.pre_any.is_empty() && q.pre_any.iter().all(|p| !self.model.index.contains_key(p)));
             let reason = if impossible {
                 "prerequisite not plannable"
-            } else if !self.availability().prereqs_met(s, q) {
+            } else if !self.availability().prereqs_met(s, i as u32) {
                 if std::env::var_os("FG_DEBUG_PREREQ").is_some() && q.level >= 45 {
                     let names: Vec<String> = q
                         .pre_all

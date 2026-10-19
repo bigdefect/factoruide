@@ -66,6 +66,7 @@ impl QuestBuilder<'_> {
                 .into_iter()
                 .map(|(f, v)| (f, v as f64 * self.profile.reputation_rate()))
                 .collect(),
+            members: self.profile.members_of(r.races, r.classes),
         }
     }
 
@@ -98,11 +99,9 @@ impl QuestBuilder<'_> {
         min_level.max(self.params.level_for(need, crate::params::Might::PLAIN))
     }
 
-    /// Quests of the other classes give their XP to the other player.
+    /// The quest's XP (to each member it is for, see `Initial::need`).
     fn xp(&self, r: &QuestRow, level: i64) -> i64 {
-        if self.other_class(r) {
-            0
-        } else if r.xp > 0 || r.xp_observed {
+        if r.xp > 0 || r.xp_observed {
             // The game's own XP, none included (an item handed in for a reward only).
             r.xp
         } else {
