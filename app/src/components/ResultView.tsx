@@ -166,7 +166,7 @@ export function ResultView({ version, onRerun, onEdit, onClone, onSaved, onUnsav
             {installed && versions.length > 1 && <span className="tag installed">{t("suivie")}</span>}
           </h2>
           <div className="muted result-meta">
-            <Character race={version.request.race} klass={version.request.class} group={version.request.group} options={options} /> ·{" "}
+            <Character race={version.request.race} klass={version.request.class} group={version.request.mates?.map((m) => m.class.toLowerCase())} options={options} /> ·{" "}
             {t("niveau {from} → {to}", { from: route.from_level, to: route.to_level })} · {route.total_time_text} ·{" "}
             <span title={meta.data ? t("Données : {data}", { data: meta.data }) : undefined}>{t("Calculé le {date}", { date: date(meta.created) })}</span>
             {meta.imported && <> · {t("importé")}</>}

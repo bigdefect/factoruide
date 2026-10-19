@@ -147,10 +147,10 @@ export interface PlanRequest {
   professions?: ProfessionGoal[];
   /** Language of the guide texts (English where a name is not translated). */
   locale?: string | null;
-  /** Classes of the other players leveling together (empty: solo). */
-  group?: string[];
   /** The character as the addon recorded it in game: the guide goes on from there. */
   start?: StartState | null;
+  /** The other players of a group guide, as their addon recorded them (empty: solo). */
+  mates?: StartState[];
 }
 
 /** A point of a game map (uiMapID, percent coordinates). */
@@ -201,6 +201,8 @@ export interface CharacterInfo {
   class: string;
   /** Professions it has: key and skill. */
   professions: [string, number][];
+  /** Another player's, received in a party (`/fg partage`): for group guides, not played here. */
+  shared: boolean;
   profile: StartState;
 }
 

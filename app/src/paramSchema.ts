@@ -48,14 +48,6 @@ export const sections: Section[] = [
     ],
   },
   {
-    title: "Groupe",
-    help: "Quand vous montez à plusieurs (joueurs choisis dans l'écran Essentiel).",
-    fields: [
-      { key: "group_kill_speed", kind: "number", label: "Dégâts de chaque joueur en plus", help: "Part des dégâts d'un joueur seul : 80 % = un duo tue 1,8 fois plus vite.", unit: "%", scale: 0.01, min: 20, max: 100, step: 5 },
-      { key: "group_shared_drops", kind: "bool", label: "Objets de quête pour tout le groupe", help: "Un objet de quête qui tombe est ramassé par chaque joueur qui a la quête. Sinon chacun doit avoir le sien (plus de mobs à tuer)." },
-    ],
-  },
-  {
     title: "Rythme de jeu",
     help: "Ajustez à votre façon de jouer : un joueur rapide tue plus vite et se repose moins.",
     fields: [

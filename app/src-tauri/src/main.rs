@@ -685,7 +685,7 @@ impl AppState {
             created,
             race: request.race.clone(),
             class: request.class.clone(),
-            group: request.group.clone(),
+            group: request.mates.iter().map(|m| m.class.to_lowercase()).collect(),
             from_level: route.from_level,
             to_level: route.to_level,
             total_time: route.total_time,
@@ -849,7 +849,9 @@ async fn plan_route(app: AppHandle, request: PlanRequest) -> CmdResult<VersionMe
                 err(e)
             }
         })?;
-        state.add_version(&request, &outcome, data_version(&conn), (false, false), now()?)
+        let meta = state.add_version(&request, &outcome, data_version(&conn), (false, false), now()?)?;
+        assign_players(state, &meta.guide, &outcome.route)?;
+        Ok(meta)
     })
     .await
     .map_err(err)?
@@ -1593,7 +1595,31 @@ fn import_guide(state: State<'_, AppState>, content: String) -> CmdResult<Versio
     if let (Some(memory), Some(walks)) = (&shared.outcome.walks, state.walks.lock().unwrap().get(&state.edition())) {
         walks.add(memory.clone());
     }
-    state.add_version(&shared.request, &shared.outcome, data, (true, false), now()?)
+    let meta = state.add_version(&shared.request, &shared.outcome, data, (true, false), now()?)?;
+    assign_players(state, &meta.guide, &shared.outcome.route)?;
+    Ok(meta)
+}
+
+/// A group guide is followed by those of its players who play on this computer: made here or
+/// received from another player, it is theirs at once (the addon is installed again).
+fn assign_players(state: State<'_, AppState>, guide: &str, route: &Route) -> CmdResult<()> {
+    if route.players.is_empty() {
+        return Ok(());
+    }
+    let here: std::collections::HashSet<String> = (characters(&state)?.into_iter())
+        .filter(|c| !c.shared)
+        .map(|c| c.profile.name)
+        .collect();
+    let mut assignments = state.assignments();
+    let mut changed = false;
+    for p in route.players.iter().filter(|p| here.contains(&p.name)) {
+        changed |= assignments.insert(p.name.clone(), guide.to_owned()).as_deref() != Some(guide);
+    }
+    if changed {
+        state.write_assignments(&assignments)?;
+        install_addon(state)?;
+    }
+    Ok(())
 }
 
 // Characters -------------------------------------------------------------------------
@@ -1609,6 +1635,8 @@ struct CharacterInfo {
     class: String,
     /// Professions it has, by key, with their skill.
     professions: Vec<(String, i64)>,
+    /// Another player's, received in a party (`/fg share`): for group guides, not played here.
+    shared: bool,
     profile: StartState,
 }
 
@@ -1700,12 +1728,24 @@ fn characters(state: &AppState) -> CmdResult<Vec<CharacterInfo>> {
     let full_names = full_names(&files);
     let races = overrides(settings.edition)?.races;
     let now = i64::try_from(now()?).map_err(err)?;
-    Ok(fg_contrib::profile::read(&files)
+    let profiles: Vec<(bool, StartState)> = fg_contrib::profile::read(&files)
         .map_err(err)?
         .into_iter()
-        .filter_map(|json| serde_json::from_value::<StartState>(json).ok())
-        .filter(|profile| !is_forgotten(&settings.forgotten_characters, settings.edition, profile))
-        .map(|mut profile| {
+        .filter_map(|json| {
+            let shared = json["shared"].as_bool().unwrap_or(false);
+            Some((shared, serde_json::from_value::<StartState>(json).ok()?))
+        })
+        .collect();
+    // A character of this computer is not also listed as received from another player.
+    let own: std::collections::HashSet<String> = (profiles.iter())
+        .filter(|(shared, _)| !shared)
+        .map(|(_, p)| p.name.clone())
+        .collect();
+    Ok(profiles
+        .into_iter()
+        .filter(|(shared, p)| !shared || !own.contains(&p.name))
+        .filter(|(_, profile)| !is_forgotten(&settings.forgotten_characters, settings.edition, profile))
+        .map(|(shared, mut profile)| {
             profile.rested = rested_now(&profile, now);
             // Only when the first name is not shared (two characters with the same one).
             let first = profile.name.split('-').next().unwrap_or_default();
@@ -1730,6 +1770,7 @@ fn characters(state: &AppState) -> CmdResult<Vec<CharacterInfo>> {
                         Some((def.key.to_owned(), s.rank))
                     })
                     .collect(),
+                shared,
                 profile,
             }
         })

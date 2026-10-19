@@ -42,7 +42,7 @@ export function CharactersPage({ options, onOpenGuide, onNewGuide, editionName, 
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    api.listCharacters().then(setCharacters).catch((e) => setError(String(e)));
+    api.listCharacters().then((list) => setCharacters(list.filter((c) => !c.shared))).catch((e) => setError(String(e)));
     api.listGuides().then(setGuides).catch((e) => setError(String(e)));
     api.listAssignments().then(setAssignments).catch((e) => setError(String(e)));
     api

@@ -100,6 +100,92 @@ function Toggle({ label, help, checked, onChange }: { label: string; help: strin
   );
 }
 
+/** Players in a group guide, the character included. */
+const GROUP_MAX = 5;
+/** Level every player of a group guide must have reached. */
+const GROUP_MIN_LEVEL = 10;
+
+/** "Name" of a "Name-Realm". */
+const shortName = (name: string) => name.split("-")[0];
+
+/**
+ * The other players of a group guide: characters the addon recorded, of the same faction and
+ * level 10 or more, here or received in game (`/fg partage` in the party).
+ */
+function GroupPanel({
+  start,
+  mates,
+  characters,
+  onAdd,
+  onRemove,
+}: {
+  start: StartState | null;
+  mates: StartState[];
+  characters: CharacterInfo[] | null;
+  onAdd: (mate: StartState) => void;
+  onRemove: (name: string) => void;
+}) {
+  const t = useT();
+  const candidates = (characters ?? []).filter(
+    (c) => start && c.profile.name !== start.name && c.profile.faction === start.faction && c.profile.level >= GROUP_MIN_LEVEL && !mates.some((m) => m.name === c.profile.name),
+  );
+  const player = (p: StartState, shared: boolean) => (
+    <>
+      <strong>{shortName(p.name)}</strong> <ClassName klass={p.class.toLowerCase()} /> <span className="muted">{t("niveau {n}", { n: p.level })}</span>
+      {shared && <span className="tag">{t("reçu en jeu")}</span>}
+    </>
+  );
+  return (
+    <section className="panel">
+      <h3>
+        {t("Groupe")}
+        <Hint text={t("Un guide pour tout le groupe : la même route pour chacun, l'XP de chacun suivie, les quêtes déjà faites par certains reprises pour les autres. Chaque joueur doit être niveau 10 au moins, tous de la même faction.")} />
+      </h3>
+      {!start ? (
+        <p className="muted">{t("Choisissez d'abord votre personnage : un guide de groupe part des personnages tels que l'addon les a vus.")}</p>
+      ) : start.level < GROUP_MIN_LEVEL ? (
+        <p className="muted">{t("Un guide de groupe commence au niveau 10 : chaque joueur doit l'avoir atteint.")}</p>
+      ) : (
+        <>
+          <div className="companions">
+            <div className="companion me">
+              <span className="muted">{t("Vous")}</span> {player(start, false)}
+            </div>
+            {mates.map((m) => (
+              <div className="companion" key={m.name}>
+                {player(m, characters?.find((c) => c.profile.name === m.name)?.shared ?? false)}
+                <button className="link" aria-label={t("Retirer")} title={t("Retirer")} onClick={() => onRemove(m.name)}>
+                  ✕
+                </button>
+              </div>
+            ))}
+            {mates.length < GROUP_MAX - 1 && candidates.length > 0 && (
+              <select
+                className="companion add"
+                aria-label={t("Ajouter un joueur")}
+                value=""
+                onChange={(e) => {
+                  const c = candidates.find((x) => x.profile.name === e.target.value);
+                  if (c) onAdd(c.profile);
+                }}
+              >
+                <option value="">+ {t("Ajouter un joueur")}</option>
+                {candidates.map((c) => (
+                  <option key={c.profile.name} value={c.profile.name}>
+                    {shortName(c.profile.name)} · {t("niveau {n}", { n: c.profile.level })}
+                    {c.shared ? ` · ${t("reçu en jeu")}` : ""}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          <p className="muted">{t("Les autres joueurs tapent /fg partage en jeu, dans votre groupe : leur profil arrive ici après un /reload de votre côté.")}</p>
+        </>
+      )}
+    </section>
+  );
+}
+
 /**
  * Step 1. The simple view holds the choices that matter (character, pace, dungeons, zones,
  * professions); the advanced view every setting of the planner.
@@ -111,11 +197,10 @@ export function ConfigForm({ options, initial, startCharacter, defaultLocale, on
   const [view, setView] = useState<View>("simple");
   const [race, setRace] = useState(initial?.race ?? options.races[0]?.key ?? "");
   const [klass, setKlass] = useState(initial?.class ?? options.races.find((r) => r.key === race)?.classes[0] ?? options.classes[0]?.key ?? "");
-  // Classes the race can play, and those of its faction (for the other players of a group).
+  // Classes the race can play.
   const raceInfo = options.races.find((r) => r.key === race);
   const playable = (keys: string[] | undefined) => options.classes.filter((c) => !keys?.length || keys.includes(c.key));
   const raceClasses = playable(raceInfo?.classes);
-  const factionClasses = playable(options.races.filter((r) => r.faction === raceInfo?.faction).flatMap((r) => r.classes));
   // Adjusted while rendering (not in an effect) when the race can't play the class.
   if (raceClasses.length && !raceClasses.some((c) => c.key === klass)) setKlass(raceClasses[0].key);
   const [triedRun, setTriedRun] = useState(false);
@@ -129,12 +214,12 @@ export function ConfigForm({ options, initial, startCharacter, defaultLocale, on
   const [params, setParams] = useState<Params>({ ...defaults, ...(initial?.params ?? {}) });
   const [classQuests, setClassQuests] = useState<string[] | null>(initial?.required_class_quests ?? null);
   const [professions, setProfessions] = useState<ProfessionGoal[]>(initial?.professions ?? []);
-  // Classes of the players leveling with the character (up to 4).
-  const [group, setGroup] = useState<string[]>(initial?.group ?? []);
-  const addCompanion = () => {
+  // The other players of a group guide (up to 4), as their addon recorded them.
+  const [mates, setMates] = useState<StartState[]>(initial?.mates ?? []);
+  const addMate = (mate: StartState) => {
     // Going from solo to a group: elite quests become worth it.
-    if (group.length === 0) set("allow_elite", true);
-    setGroup([...group, factionClasses.find((c) => c.key !== klass)?.key ?? klass]);
+    if (mates.length === 0) set("allow_elite", true);
+    setMates([...mates, mate]);
   };
   const [newClassQuest, setNewClassQuest] = useState("");
   // The character met in game the guide starts from, and those the addon recorded.
@@ -150,6 +235,8 @@ export function ConfigForm({ options, initial, startCharacter, defaultLocale, on
   const [picked, setPicked] = useState(false);
   const pickCharacter = (c: CharacterInfo | null) => {
     setStart(c?.profile ?? null);
+    // A group starts from the characters as the addon saw them, of one faction, level 10 or more.
+    setMates((list) => (c && c.profile.level >= GROUP_MIN_LEVEL ? list.filter((m) => m.name !== c.profile.name && m.faction === c.profile.faction) : []));
     if (!c) {
       setFromLevel(1);
       return;
@@ -229,15 +316,15 @@ export function ConfigForm({ options, initial, startCharacter, defaultLocale, on
     required_class_quests: classQuests ?? [],
     professions,
     locale,
-    group,
     start,
+    mates: start && start.level >= GROUP_MIN_LEVEL ? mates : [],
   });
 
   useEffect(() => {
     onChange?.(request());
     // The request is made of these.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [race, klass, fromLevel, toLevel, name, params, classQuests, professions, locale, group, start, onChange]);
+  }, [race, klass, fromLevel, toLevel, name, params, classQuests, professions, locale, mates, start, onChange]);
 
   /** A section of the advanced settings (null when the search leaves none of its fields). */
   const settingsSection = (s: Section) => {
@@ -332,7 +419,7 @@ export function ConfigForm({ options, initial, startCharacter, defaultLocale, on
           <section className="panel">
             <h3>{t("Personnage")}</h3>
             <div className="character-grid">
-              <CharacterPicker characters={characters} start={start} onPick={pickCharacter} />
+              <CharacterPicker characters={characters?.filter((c) => !c.shared) ?? null} start={start} onPick={pickCharacter} />
               <label className={`field guide-name${nameMissing ? " invalid" : ""}`}>
                 <span>
                   {t("Nom du guide")} <em className="required">*</em>
@@ -454,43 +541,7 @@ export function ConfigForm({ options, initial, startCharacter, defaultLocale, on
                 onChange={(reputation_goals) => setParams((p) => ({ ...p, reputation_goals }))}
               />
 
-              <section className="panel">
-                <h3>
-                  {t("Groupe")}
-                  <Hint
-                    text={
-                      group.length === 0
-                        ? t("Seul. Ajoutez les joueurs qui montent avec vous : combats plus rapides, XP des mobs partagée, quêtes de classe de chacun.")
-                        : t("{n} joueurs : combats plus rapides, XP des mobs partagée, quêtes de classe de chacun.", { n: group.length + 1 })
-                    }
-                  />
-                </h3>
-                <div className="companions">
-                  <div className="companion me">
-                    <span className="muted">{t("Vous")}</span>
-                    <ClassName klass={klass} />
-                  </div>
-                  {group.map((c, i) => (
-                    <div className="companion" key={i}>
-                      <select aria-label={t("Classe du joueur {n}", { n: i + 2 })} value={c} onChange={(e) => setGroup(group.map((g, j) => (j === i ? e.target.value : g)))}>
-                        {factionClasses.map((o) => (
-                          <option key={o.key} value={o.key}>
-                            {gameName(o.name)}
-                          </option>
-                        ))}
-                      </select>
-                      <button className="link" aria-label={t("Retirer")} title={t("Retirer")} onClick={() => setGroup(group.filter((_, j) => j !== i))}>
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                  {group.length < 4 && (
-                    <button className="companion add" onClick={addCompanion}>
-                      + {t("Ajouter un joueur")}
-                    </button>
-                  )}
-                </div>
-              </section>
+              <GroupPanel start={start} mates={mates} characters={characters} onAdd={addMate} onRemove={(gone) => setMates(mates.filter((m) => m.name !== gone))} />
             </div>
 
             <div className="config-col config-side">
