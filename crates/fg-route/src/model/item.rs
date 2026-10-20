@@ -44,6 +44,9 @@ impl QuestBuilder<'_> {
         if quest.row.source_item.is_some_and(|s| s == target || in_given_bag(s)) {
             return Ok(None); // given when accepting, or in the bag given then (Call of Fire's satchel)
         }
+        if self.bag_quest(quest.row.id, target).is_some() {
+            return Ok(None); // in the bag another quest gives, held in the log (`Quest::pre_held`)
+        }
         let name = self.sources.entities.name(EntityKind::Item, target);
         let count =
             amount.unwrap_or_else(|| count_for(&quest.requirements, &name).unwrap_or(self.params.default_item_count));

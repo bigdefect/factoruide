@@ -23,6 +23,7 @@ mod types;
 
 pub(crate) use chains::{class_sort, required_by_name};
 pub use farm::{FarmMobs, Met};
+pub use givers::{Dropper, UNKNOWN_START_CHANCE, assumed_start_chance};
 pub use guard::Guards;
 pub use loot::CommonLoot;
 pub use names::Names;

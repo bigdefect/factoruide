@@ -2,7 +2,8 @@
 # Coordinates are zone percent coordinates (AreaTable zone ID, x, y) of where you board.
 # `seconds` = ride (the average wait `link_wait` is added, except with `instant = true`: portals,
 # orbs, lifts). Links work both ways unless `one_way = true`. `races` (keys of races.toml): only
-# those races can take it (default: every race of `faction`).
+# those races can take it (default: every race of `faction`). `after_quest`: open once that
+# quest is taken; with `while_held = true`, only while it is in the log (a quest's free flight).
 #
 # This file: the links of every game version; <edition>/travel.toml adds those of one version
 # (forever, classic, tbc).
@@ -61,6 +62,20 @@ faction = "Alliance"
 from = { zone = 148, x = 33.2, y = 40.2 } # approx
 to = { zone = 141, x = 55.0, y = 93.0 }   # approx
 seconds = 150
+
+# Flight to Auberdine (6342): Vesprystus flies the character to Auberdine for free while the
+# quest is in the log, the Auberdine flight path known or not. The ride is the client's taxi
+# path 102 (Rut'theran Village -> Auberdine, 2540 yards at the flight speed).
+[[link]]
+name = "Vesprystus's hippogryph to Auberdine"
+faction = "Alliance"
+from = { zone = 141, x = 58.4, y = 94.02 }   # npc Vesprystus
+to = { zone = 148, x = 36.34, y = 45.58 }    # npc Caylais Moonfeather
+seconds = 85
+one_way = true
+instant = true
+after_quest = 6342
+while_held = true
 
 # The Feathermoon ferry (Feralas), from the client's transport path 303: docks and courses, the
 # ride from their length as the other boats' (the way to the island goes around: longer).

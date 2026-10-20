@@ -131,6 +131,9 @@ pub struct Objective {
     pub pack: f64,
     /// Hostile mobs around where it is done.
     pub guard: Guard,
+    /// An object used right beside the quest's giver or turn-in, no elite around (the campfire
+    /// to sit at next to Kaga Wildhoof): it requires no power, as talking to them.
+    pub beside_giver: bool,
     /// The other places it can be done (other groups of its mobs or objects), each with what
     /// changes there: the mobs, their level and packs, the guards, the wait for respawns. The
     /// planner goes to the best one from where the character is (`Planner::spot`).
@@ -345,6 +348,10 @@ pub struct Quest {
     pub pre_all: Vec<i64>,
     pub pre_any: Vec<i64>,
     pub exclusive: Vec<i64>,
+    /// Quests to hold in the log when taking it: those whose starting item is a bag holding an
+    /// item it asks for (The Warsong Reports' Bundle of Reports, opened for the Warsong Report
+    /// each scout's update asks for).
+    pub pre_held: Vec<i64>,
     pub breadcrumb_for: Option<i64>,
     /// Work to get the item that starts the quest (kills at mob level, object uses).
     pub start_kills: f64,

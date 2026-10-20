@@ -109,10 +109,16 @@ impl Trips<'_> {
     }
 
     /// The links `s` may take (see `World::link_chain`): those a quest opens once it is taken,
-    /// or when the character cannot take it.
+    /// or when the character cannot take it; those open only while a quest is in the log, while
+    /// it is.
     pub(crate) fn open_links(&self, s: &State) -> u8 {
+        let open = |&(id, held): &(i64, bool)| match self.model.index.get(&id) {
+            Some(&q) if held => s.accepted[q] && !s.turned[q],
+            Some(&q) => s.accepted[q] || s.turned[q],
+            None => !held,
+        };
         (self.world.link_quests.iter().enumerate())
-            .filter(|&(_, id)| self.model.index.get(id).is_none_or(|&q| s.accepted[q] || s.turned[q]))
+            .filter(|(_, l)| open(l))
             .fold(0, |open, (k, _)| open | 1 << k)
     }
 

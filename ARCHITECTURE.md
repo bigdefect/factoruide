@@ -78,7 +78,8 @@ kill time, and XP and the moment to turn a quest in follow the real level.
 reach (`Params::reach`, `Planner::objective_need`):
 
 - required power: the quest's level for anything done among its mobs (kills, loot, objects,
-  exploring, escorts; talking and delivering require nothing), and the mobs' level: one less for a
+  exploring, escorts; talking and delivering require nothing, nor an object used right beside the
+  NPC giving or taking back the quest with no elite around, a campfire to sit at in a camp), and the mobs' level: one less for a
   lone target (one or two kills), two more for an elite, times `1 + elite_pull_power` per extra
   elite expected in each pull. The pull is measured from the spawns: the elites within aggro range
   of each spawn of the target (a lone elite like Hogger counts 1, a camp of ogres more, capped at 3).

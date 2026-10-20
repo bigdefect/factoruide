@@ -110,17 +110,20 @@ impl QuestBuilder<'_> {
         Ok(givers)
     }
 
-    /// The item quest `quest`'s NPC offers it for: one of its objectives, got from an object the
-    /// sources also give as a starter (the library's books, "The Dalaran Digest": the librarian
-    /// offers it only while the book is in the bags, GitHub #29).
+    /// The item quest `quest`'s NPC offers it for: one of its objectives that the data also
+    /// gives as a starter, itself or the object it is looted from (the library's books, "The
+    /// Dalaran Digest": the librarian offers it only while the book is in the bags, GitHub #29).
+    /// The book is looted first, then the quest is taken and turned in at once at the librarian.
     fn held_item(&self, quest: i64, relations: &[(Role, EntityKind, i64)]) -> Option<i64> {
         let starts = |k: EntityKind| {
             relations
                 .iter()
                 .filter(move |(r, kind, _)| *r == Role::Start && *kind == k)
+                .map(|(_, _, id)| *id)
         };
         starts(EntityKind::Npc).next()?;
-        let objects: Vec<i64> = starts(EntityKind::Object).map(|(_, _, id)| *id).collect();
+        let objects: Vec<i64> = starts(EntityKind::Object).collect();
+        let items: Vec<i64> = starts(EntityKind::Item).collect();
         self.sources
             .objectives
             .get(&quest)?
@@ -129,15 +132,13 @@ impl QuestBuilder<'_> {
             .find_map(|o| {
                 let item = o.1?;
                 let origins = self.sources.item_origins.get(&item)?;
-                origins
-                    .iter()
-                    .any(|(t, id)| *t == SourceKind::Object && objects.contains(id))
-                    .then_some(item)
+                let from_starter = (origins.iter()).any(|(t, id)| *t == SourceKind::Object && objects.contains(id));
+                (from_starter || items.contains(&item)).then_some(item)
             })
     }
 
     /// Where the item starting quest `quest` is got: objects first, then the mob dropping it
-    /// best (unknown rate: a modest 10%; looting it costs 1 / chance kills).
+    /// best (unknown rate: see `assumed_start_chance`; looting it costs 1 / chance kills).
     fn item_start(&self, quest: i64, item: i64) -> ItemStart {
         let (entities, world, params) = (&self.sources.entities, self.world, self.params);
         let start = &self.sources.start;
@@ -166,10 +167,24 @@ impl QuestBuilder<'_> {
                 spots: None,
             };
         }
+        let droppers: Vec<Dropper> = sources
+            .iter()
+            .filter(|(t, _)| *t == SourceKind::Npc)
+            .map(|(_, n)| Dropper {
+                rank: entities.npc.get(n).map_or(0, |e| e.3),
+                spawns: entities.spawns.get(&(EntityKind::Npc, *n)).map_or(0, Vec::len),
+            })
+            .collect();
+        let unknown = assumed_start_chance(&droppers);
         let mobs: Vec<(i64, f64)> = sources
             .iter()
             .filter(|(t, n)| *t == SourceKind::Npc && (params.allow_elite || !entities.is_elite(*n)))
-            .map(|(_, n)| (*n, self.sources.drop_chance.get(&(item, *n)).copied().unwrap_or(0.1)))
+            .map(|(_, n)| {
+                (
+                    *n,
+                    self.sources.drop_chance.get(&(item, *n)).copied().unwrap_or(unknown),
+                )
+            })
             .collect();
         let rare = objects.is_empty()
             && !mobs.is_empty()
@@ -239,5 +254,59 @@ impl QuestBuilder<'_> {
             }
         }
         ItemStart::Rewarded(places)
+    }
+}
+
+/// A creature dropping an item that starts a quest: its rank (0 normal, 1 elite, 2 rare elite,
+/// 3 boss, 4 rare) and how many places it is known at.
+#[derive(Debug, Clone, Copy)]
+pub struct Dropper {
+    pub rank: i64,
+    pub spawns: usize,
+}
+
+/// The chance per kill assumed for an item starting a quest when no source knows its rate.
+/// Dropped by one creature, or only by unique ones (a rare, a boss, an NPC standing at one to
+/// three places: the rogues' Elegant Letter on each trainer), it is that creature's item, looted
+/// on the kill or nearly: a modest 10%. Dropped by several kinds of common mobs, it is a rare
+/// find on all of them (Precessive Autocognition Assembly: about one in 900 Harvest Golems):
+/// 0, below `min_start_chance`, so the quest is not planned (looted anyway when it drops).
+pub fn assumed_start_chance(droppers: &[Dropper]) -> f64 {
+    let unique = |d: &Dropper| matches!(d.rank, 2..=4) || (1..=3).contains(&d.spawns);
+    if droppers.len() <= 1 || droppers.iter().all(unique) {
+        UNKNOWN_START_CHANCE
+    } else {
+        0.0
+    }
+}
+
+/// The chance assumed for an item starting a quest that its own creature drops (rate unknown).
+pub const UNKNOWN_START_CHANCE: f64 = 0.1;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn d(rank: i64, spawns: usize) -> Dropper {
+        Dropper { rank, spawns }
+    }
+
+    #[test]
+    fn an_item_of_common_mobs_is_rare() {
+        // Harvesting the Harvesters: four kinds of golems and scarecrows, many of each.
+        assert_eq!(assumed_start_chance(&[d(0, 29), d(0, 35), d(0, 10), d(0, 16)]), 0.0);
+        // A named NPC among common ones does not make the item his (Captain Beld, Dark Iron Spies).
+        assert_eq!(assumed_start_chance(&[d(0, 12), d(0, 1)]), 0.0);
+        // Creatures of unknown places are not unique ones.
+        assert_eq!(assumed_start_chance(&[d(1, 0), d(1, 0)]), 0.0);
+    }
+
+    #[test]
+    fn an_item_of_one_creature_or_unique_ones_keeps_the_default() {
+        assert_eq!(assumed_start_chance(&[d(1, 149)]), UNKNOWN_START_CHANCE);
+        assert_eq!(assumed_start_chance(&[d(0, 1)]), UNKNOWN_START_CHANCE);
+        // The rogues' Elegant Letter: one trainer at each place.
+        assert_eq!(assumed_start_chance(&[d(0, 1); 14]), UNKNOWN_START_CHANCE);
+        assert_eq!(assumed_start_chance(&[d(4, 3), d(2, 40)]), UNKNOWN_START_CHANCE);
     }
 }

@@ -4,7 +4,7 @@
 use super::builder::QuestBuilder;
 use super::givers::Givers;
 use super::selection::QuestSkill;
-use super::sources::{LinkKind, QuestRow};
+use super::sources::{LinkKind, ObjectiveKind, QuestRow, SourceKind};
 use super::types::{Objective, Quest};
 
 impl QuestBuilder<'_> {
@@ -42,6 +42,7 @@ impl QuestBuilder<'_> {
             pre_all,
             pre_any,
             exclusive: self.links(r.id, LinkKind::Exclusive),
+            pre_held: self.pre_held(r),
             breadcrumb_for: r.breadcrumb_for.filter(|b| *b > 0),
             start_kills: givers.start_work.0,
             start_mob_level: givers.start_work.1,
@@ -121,6 +122,31 @@ impl QuestBuilder<'_> {
             pre_any.extend(item_pre);
         }
         (pre_all, pre_any)
+    }
+
+    /// The quests to hold in the log when taking it: those giving a bag that holds an item it
+    /// asks for, unless its own starting item gives it.
+    fn pre_held(&self, r: &QuestRow) -> Vec<i64> {
+        let own = |item: i64| {
+            r.source_item.is_some_and(|s| {
+                s == item
+                    || (self.sources.item_origins.get(&item))
+                        .is_some_and(|o| o.contains(&(SourceKind::Item, s)))
+            })
+        };
+        let mut held: Vec<i64> = Vec::new();
+        for o in self.sources.objectives.get(&r.id).into_iter().flatten() {
+            if o.0 != ObjectiveKind::Item {
+                continue;
+            }
+            let Some(item) = o.1.filter(|i| !own(*i)) else { continue };
+            if let Some(q) = self.bag_quest(r.id, item)
+                && !held.contains(&q)
+            {
+                held.push(q);
+            }
+        }
+        held
     }
 
     fn links(&self, id: i64, kind: LinkKind) -> Vec<i64> {

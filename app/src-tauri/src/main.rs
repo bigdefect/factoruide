@@ -134,7 +134,7 @@ impl Default for Settings {
 impl Settings {
     /// The addons folder of a game version's client.
     fn addons_dir(&self, edition: Edition) -> PathBuf {
-        self.wow_dir.join(edition.client_folder()).join("Interface/AddOns")
+        edition.client_dir(&self.wow_dir).join("Interface/AddOns")
     }
     /// What shows the guides in a game version: Polestar exists on WoW Forever only.
     fn guide_addon(&self, edition: Edition) -> GuideAddon {
@@ -287,7 +287,7 @@ fn list_editions(state: State<'_, AppState>) -> Vec<EditionInfo> {
             key: e.key(),
             name: e.rules().edition_name,
             available: embedded::DATABASES.iter().any(|(k, _)| *k == e.key()) && e.rules().known(),
-            installed: settings.wow_dir.join(e.client_folder()).is_dir(),
+            installed: e.installed_in(&settings.wow_dir),
             max_level: e.rules().max_level,
         })
         .collect()
@@ -1593,7 +1593,7 @@ fn forget_character(state: State<'_, AppState>, character: String) -> CmdResult<
 
 fn characters(state: &AppState) -> CmdResult<Vec<CharacterInfo>> {
     let settings = state.settings();
-    let client_dir = settings.wow_dir.join(settings.edition.client_folder());
+    let client_dir = settings.edition.client_dir(&settings.wow_dir);
     let files = fg_contrib::collector::find_saved_variables(&client_dir);
     let full_names = full_names(&files);
     let races = overrides(settings.edition)?.races;
@@ -1917,7 +1917,7 @@ fn find_game(settings: &mut Settings) {
     {
         settings.wow_dir = found;
     }
-    let installed = |e: Edition| settings.wow_dir.join(e.client_folder()).is_dir();
+    let installed = |e: Edition| e.installed_in(&settings.wow_dir);
     if !installed(settings.edition)
         && let Some(e) = Edition::ALL.iter().copied().find(|e| installed(*e))
     {
@@ -2130,7 +2130,7 @@ fn collect_contribution(
     sent: &SendState,
 ) -> CmdResult<(Contribution, SendState, bool, PathBuf)> {
     let contributor = contributor_id(state)?;
-    let client_dir = state.settings().wow_dir.join(edition.client_folder());
+    let client_dir = edition.client_dir(&state.settings().wow_dir);
     let (c, next, more) = fg_contrib::contribution::collect(
         &client_dir,
         edition.key(),
@@ -2708,7 +2708,7 @@ fn auto_contribute(state: &AppState) -> std::time::Duration {
         return std::time::Duration::from_secs(next);
     };
     for edition in Edition::ALL {
-        if !settings.wow_dir.join(edition.client_folder()).is_dir() {
+        if !edition.installed_in(&settings.wow_dir) {
             continue;
         }
         let _sending = state

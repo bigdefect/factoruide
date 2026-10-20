@@ -6,8 +6,9 @@
 //!
 //! The fixed part is a run of 4-byte fields: id | type | quest level | ... | min level | quest
 //! sort | ... | next quest in chain | XP difficulty | XP multiplier (f32) | ... | start item |
-//! flags | ... | 4 x (reward item, amount, source item, source amount) | ... | objective count |
-//! allowable races (u64) | 2 treasure picker counts | ... | 2 conditional text counts | ...
+//! flags | ... | 4 x (reward item, amount, source item, source amount) | ... | accept sound kit |
+//! complete sound kit | area group | time allowed (i64, seconds: MacKreel's Moonshine's 900 on
+//! Classic Era) | objective count | allowable races (u64) | 2 treasure picker counts | ... | 2 conditional text counts | ...
 //! The variable part holds 12 bytes of bit-packed string lengths (see `super::WIDTHS`), the
 //! objectives and the strings, in an order that depends on the client:
 //!   Classic Era and TBC (record version 11): lengths, objectives, strings, conditional texts.
@@ -142,6 +143,10 @@ pub struct QuestInfo {
     pub races: u32,
     /// QuestFlags.
     pub flags: u32,
+    /// Timed quest: seconds from taking it to finish it, else it fails (absent from
+    /// contributions of earlier app versions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_allowed: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,8 +258,17 @@ fn decode_with(rec: &[u8], l: &Layout, id: Option<u32>) -> Result<Decoded> {
             item_drops,
             races: field(l.races) as u32,
             flags: field(l.flags) as u32,
+            time_allowed: time_allowed(&fields, l.objectives),
         },
     })
+}
+
+/// The time allowed, the i64 right before the objective count: kept when it is a plausible
+/// limit (up to a day; quests have 1 to 120 minutes).
+fn time_allowed(fields: &[i32], objectives: usize) -> Option<u32> {
+    let low = fields[objectives - 2] as u32;
+    let high = fields[objectives - 1];
+    (high == 0 && (1..=86_400).contains(&low)).then_some(low)
 }
 
 /// The 9 string lengths (12 bytes, the last bits are flags).
@@ -368,6 +382,7 @@ mod tests {
             (l.rewards + 2, 1083),
             (l.rewards + 3, 1),
             (l.races, 77),
+            (l.objectives - 2, 600),
         ];
         let objectives: [Obj<'_>; 2] = [(1, 750, 8, &[], ""), (0, 299, 10, &[42], "Vermin slain")];
         record(l, &set, &objectives, "Wolves Across the Border", "Bring 8 meat.")
@@ -405,6 +420,7 @@ mod tests {
                     item_drops: vec![ItemDrop { item: 1083, count: 1 }],
                     races: 77,
                     flags: 8,
+                    time_allowed: Some(600),
                 }
             );
         }

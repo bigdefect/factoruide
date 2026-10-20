@@ -2640,6 +2640,55 @@ for _, f in ipairs(frames) do
     if f:GetParent() == MainMenuExpBar then xpMark = f end
 end
 assert(xpMark and xpMark:IsShown(), "the XP bar mark shown")
+-- The status bar containers of every current client: the mark and the tooltip lines go on the
+-- XP bar inside, never on a container (one given an OnEnter takes the mouse from the bars).
+do
+    local container = CreateFrame("Frame", "MainStatusTrackingBarContainer")
+    container.GetWidth = function() return 1192 end
+    local hookedOn = {}
+    local function Bar(xp)
+        local bar = CreateFrame("Frame", nil, container)
+        bar.GetWidth = function() return 1189 end
+        bar.isExpBar = xp
+        bar:SetScript("OnEnter", function() end)
+        bar.HookScript = function(self, script, fn) hookedOn[self] = { script = script, fn = fn } end
+        return bar
+    end
+    local reputation, experience = Bar(nil), Bar(true)
+    reputation:Hide()
+    container.bars = { reputation, experience }
+    container.HookScript = function() error("the container hooked") end
+    container.SetScript = function() error("a script set on the container") end
+    container.EnableMouse = function() error("the container takes the mouse") end
+    StatusTrackingBarManager = { barContainers = { container } }
+    FG.XpMarker:Refresh()
+    assert(xpMark:GetParent() == experience and xpMark:IsShown(), "the mark on the XP bar inside the container")
+    assert(hookedOn[experience] and hookedOn[experience].script == "OnEnter", "the XP bar's OnEnter hooked")
+    assert(not hookedOn[reputation], "not the reputation bar")
+    -- The guide's lines are added to the game's tooltip, after the bar's own text.
+    local added = {}
+    local tooltip = GameTooltip
+    GameTooltip = {
+        IsShown = function() return true end,
+        AddLine = function(_, text) table.insert(added, text) end,
+        Show = function() end,
+    }
+    hookedOn[experience].fn(experience)
+    GameTooltip = tooltip
+    assert(#added >= 1 and added[1]:find("Guide", 1, true), "the guide's line in the tooltip: " .. tostring(added[1]))
+    -- A bar without an OnEnter of its own is not given one.
+    local plain = CreateFrame("Frame", nil, container)
+    plain.GetWidth = function() return 1189 end
+    plain.isExpBar = true
+    plain.HookScript = function() error("a bar without OnEnter hooked") end
+    experience:Hide()
+    container.bars = { reputation, experience, plain }
+    FG.XpMarker:Refresh()
+    assert(xpMark:GetParent() == plain, "the mark on the bar shown")
+    StatusTrackingBarManager = nil
+    FG.XpMarker:Refresh()
+    assert(xpMark:GetParent() == MainMenuExpBar, "back on MainMenuExpBar")
+end
 local owned = {}
 for _, f in ipairs(frames) do
     if f:GetParent() == root and f:GetName() then owned[f:GetName()] = f end

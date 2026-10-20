@@ -5,7 +5,7 @@
 # some. Existing Config.lua, Routes.lua, Services.lua and Sent.lua written by older apps are kept.)
 set -eu
 wow_dir=${FG_WOW_DIR:-"/mnt/g/Jeux/World of Warcraft"}
-client=${FG_CLIENT:-_classic_beta_}
+client=${FG_CLIENT:-$([ -d "$wow_dir/_forever_" ] && echo _forever_ || echo _classic_beta_)}
 addons="$wow_dir/$client/Interface/AddOns"
 repo="$(dirname "$0")/../addon"
 # The addon was called BrouzQuest, then was one addon, Factoruide: remove them (the game would

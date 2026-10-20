@@ -33,7 +33,7 @@ fn is_game_root(dir: &Path) -> bool {
 
 /// Whether a folder holds a game version the app has guides for.
 fn has_supported_client(dir: &Path) -> bool {
-    Edition::ALL.iter().any(|e| dir.join(e.client_folder()).is_dir())
+    Edition::ALL.iter().any(|e| e.installed_in(dir))
 }
 
 /// The World of Warcraft folder from the one the player chose: the folder holding the game
@@ -200,7 +200,7 @@ pub struct WowStatus {
 
 /// The addons folder of a game version in the game's folder.
 pub fn addons_dir(root: &Path, edition: Edition) -> PathBuf {
-    root.join(edition.client_folder()).join("Interface/AddOns")
+    edition.client_dir(root).join("Interface/AddOns")
 }
 
 /// Whether the app may write in a game version's addons folder (made when missing: the game
@@ -222,7 +222,7 @@ pub fn status(dir: &Path, edition: Edition) -> WowStatus {
         Some(WowProblem::Missing)
     } else if clients.is_empty() {
         Some(WowProblem::NoGame)
-    } else if !clients.iter().any(|c| c == edition.client_folder()) {
+    } else if !clients.iter().any(|c| edition.has_client_folder(c)) {
         Some(WowProblem::NoEdition)
     } else if !writable(&addons_dir(&root, edition)) {
         Some(WowProblem::NotWritable)
@@ -321,7 +321,7 @@ pub fn older(a: &str, b: &str) -> bool {
 /// What the game did with the addon of a game version (`required`: the oldest version the app
 /// works with).
 pub fn addon_health(root: &Path, edition: Edition, required: &str) -> AddonHealth {
-    let client = root.join(edition.client_folder());
+    let client = edition.client_dir(root);
     let addons = addons_dir(root, edition);
     let toc = addons.join(PROFILE_ADDON).join(format!("{PROFILE_ADDON}.toc"));
     let installed_version = std::fs::read_to_string(&toc).ok().as_deref().and_then(toc_version);

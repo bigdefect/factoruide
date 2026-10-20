@@ -1,7 +1,7 @@
 //! Explaining a route: class quests left out, why planning stalls, objectives done along the way.
 
 use super::Planner;
-use super::state::{Kind, State, Stop};
+use super::state::{Event, Kind, State, Stop};
 use std::collections::HashSet;
 
 impl Planner<'_> {
@@ -13,6 +13,35 @@ impl Planner<'_> {
     /// Quests of the forced zones the route does not turn in, with why.
     pub fn missing_zone_quests(&self, route: &[Stop]) -> Vec<String> {
         self.missing_required(route, true)
+    }
+
+    /// Timed quests the route takes but turns in after their limit (with the planner's margin):
+    /// the guide gives them up instead, the game fails them. The planner avoids it when it can;
+    /// one left is a quest whose limit the route cannot keep.
+    pub fn late_timed_quests(&self, route: &[Stop]) -> Vec<String> {
+        let mut trace = Vec::new();
+        if self.simulate(route, Some(&mut trace)).is_none() {
+            return Vec::new();
+        }
+        let mut late: Vec<usize> = trace
+            .iter()
+            .filter_map(|t| match t.event {
+                Event::Abandon { quest } => Some(quest),
+                _ => None,
+            })
+            .filter(|&i| {
+                self.model.quests[i].time_limit.is_some()
+                    && route.iter().any(|s| s.kind == Kind::TurnIn && s.index as usize == i)
+            })
+            .collect();
+        late.dedup();
+        late.into_iter()
+            .map(|i| {
+                let q = &self.model.quests[i];
+                let minutes = q.time_limit.unwrap_or_default() / 60.0;
+                format!("{} ({}): not turned in within its {minutes:.0} minutes", q.name, q.id)
+            })
+            .collect()
     }
 
     fn missing_required(&self, route: &[Stop], zone: bool) -> Vec<String> {

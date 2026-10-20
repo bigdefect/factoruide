@@ -363,7 +363,10 @@ impl Planner<'_> {
                     Kind::Accept if s.log >= self.params.quest_log_size => "quest log full".to_owned(),
                     Kind::Accept if !self.availability().prereqs_met(&s, self.quest(stop.index)) => {
                         let q = self.quest(stop.index);
-                        format!("prerequisites {:?}/{:?} not done", q.pre_all, q.pre_any)
+                        format!(
+                            "prerequisites {:?}/{:?} not done (or {:?} not in the log)",
+                            q.pre_all, q.pre_any, q.pre_held
+                        )
                     }
                     Kind::Accept if self.availability().blocked(&s, self.quest(stop.index)) => {
                         "exclusive or breadcrumb conflict".to_owned()

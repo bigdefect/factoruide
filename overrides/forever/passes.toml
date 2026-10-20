@@ -1,0 +1,9 @@
+# WoW Forever's walking (added to ../passes.toml, the passages of every game version).
+
+# Thendal Grove's watchtower (Zephras Isle): Halaan Hawk-Eye and Myriaal Mistwake stand on top.
+# The quick way down is the Skyborne's glide, Walk on Air (travel.toml).
+[[raised]]
+name = "Thendal Grove watchtower"
+at = { zone = 16593, x = 43.71, y = 24.08 }
+radius = 5.0
+climb = 60.0 # approx: the stairs up the tower (about 10 s)

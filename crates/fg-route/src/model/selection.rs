@@ -63,7 +63,9 @@ impl QuestBuilder<'_> {
         if r.special.unwrap_or(0) & 1 != 0 {
             return Err("repeatable");
         }
-        if matches!(skill, Some(None)) || r.rep.unwrap_or(0) != 0 || r.spell.unwrap_or(0) != 0 {
+        // A negative spell is one the character must not know yet: the spell the quest teaches
+        // (Camping 101's Camp Tent), never known before taking it.
+        if matches!(skill, Some(None)) || r.rep.unwrap_or(0) != 0 || r.spell.unwrap_or(0) > 0 {
             return Err("needs a profession, reputation or spell");
         }
         Ok(())

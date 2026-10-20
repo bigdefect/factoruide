@@ -94,6 +94,18 @@ impl<'a> QuestBuilder<'a> {
         parts.iter().filter(|p| **p != item).flat_map(|p| expand(*p)).collect()
     }
 
+    /// The quest (not `quest` itself) whose starting item is a bag holding `item`: the item is
+    /// in the bags while that quest is in the log (Kadrak's Bundle of Reports, given with The
+    /// Warsong Reports, holds the Warsong Report each scout's update asks for).
+    pub(super) fn bag_quest(&self, quest: i64, item: i64) -> Option<i64> {
+        let bags = self.sources.item_origins.get(&item)?;
+        bags.iter().filter(|(t, _)| *t == SourceKind::Item).find_map(|(_, bag)| {
+            (self.sources.rows.iter())
+                .find(|r| r.id != quest && r.source_item == Some(*bag))
+                .map(|r| r.id)
+        })
+    }
+
     /// Where to meet an NPC or an object: its main spawn cluster nearest to `near`, or the
     /// entrance of the dungeon it lives in. NPCs hostile to the character do not talk to it.
     pub(super) fn locate(&self, kind: EntityKind, id: i64, near: Option<&Pos>) -> Option<Loc> {

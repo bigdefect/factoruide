@@ -33,8 +33,13 @@ impl Combat<'_> {
     /// pack (three kills or more) and `pull_levels` per extra mob coming in each pull at their
     /// spot (mobs in pairs), two more for an elite, plus `elite_pull_levels` per extra elite
     /// expected in each pull (a camp of elites). Exploring an area or escorting requires
-    /// the quest's level; talking and delivering nothing.
+    /// the quest's level; talking and delivering nothing, nor using an object beside the quest's
+    /// giver or turn-in (`Objective::beside_giver`).
     pub fn need(self, q: &Quest, o: &Objective) -> f64 {
+        // Beside the giver: the character stands there to talk to them anyway.
+        if o.beside_giver {
+            return 0.0;
+        }
         let guard = self.guard_need(&o.guard);
         if o.kills <= 0.0 && o.uses <= 0.0 && o.loc.kind != EntityKind::Area {
             return guard;

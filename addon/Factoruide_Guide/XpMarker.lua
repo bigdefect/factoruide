@@ -17,10 +17,9 @@ local L = {
     span = T("Current tasks: from %s to %s xp"),
 }
 
--- XP bars of the game and of the replacement UIs, the first one shown is used.
-local BARS = { "ElvUI_ExperienceBar", "MainMenuExpBar", "MainStatusTrackingBarContainer", "StatusTrackingBarManager" }
-
-local mark, markParent, markLine, markEnd, markBand, hooked
+local mark, markParent, markLine, markEnd, markBand
+-- Bars whose OnEnter is hooked.
+local hooked = {}
 
 --- Where the guide expects the character before the step shown: its level and XP in it.
 function XpMarker:Planned()
@@ -79,11 +78,33 @@ function XpMarker:Line()
     return string.format(gap > 0 and L.ahead or L.behind, n)
 end
 
-local function Bar()
-    for _, name in ipairs(BARS) do
-        local f = _G[name]
-        if f and f.IsShown and f:IsShown() and (tonumber(f:GetWidth()) or 0) > 50 then return f end
+local function Usable(f) return type(f) == "table" and f.IsShown and f:IsShown() and (tonumber(f:GetWidth()) or 0) > 50 end
+
+--- The game's own XP bar: on every client now one of the bars of the status bar containers
+--- (StatusTrackingBarManager.barContainers, each holding one bar per kind in `bars`, the XP one
+--- flagged `isExpBar`). Never the containers themselves: they are not the bar the mouse is on.
+local function TrackingXpBar()
+    local manager = _G.StatusTrackingBarManager
+    local containers = type(manager) == "table" and manager.barContainers
+        or { _G.MainStatusTrackingBarContainer, _G.SecondaryStatusTrackingBarContainer }
+    local enum = type(StatusTrackingBarInfo) == "table" and StatusTrackingBarInfo.BarsEnum
+    local xpIndex = type(enum) == "table" and enum.Experience or nil
+    for _, container in pairs(containers) do
+        local bars = type(container) == "table" and container.bars
+        for index, bar in pairs(type(bars) == "table" and bars or {}) do
+            local xp = Usable(bar) and (bar.isExpBar or (xpIndex ~= nil and index == xpIndex))
+            -- Shown in a hidden container (another bar in front): not this one.
+            if xp and (not bar.IsVisible or bar:IsVisible()) then return bar end
+        end
     end
+end
+
+--- The XP bar shown: a replacement UI's, the game's, or the older clients' MainMenuExpBar.
+local function Bar()
+    if Usable(_G.ElvUI_ExperienceBar) then return _G.ElvUI_ExperienceBar end
+    local bar = TrackingXpBar()
+    if bar then return bar end
+    if Usable(_G.MainMenuExpBar) then return _G.MainMenuExpBar end
 end
 
 local function Mark(parent)
@@ -123,10 +144,12 @@ function XpMarker:Shares()
     return math.min(1, UnitXP("player") / max), from, to
 end
 
---- The game's tooltip of the XP bar gets the gap with the guide.
+--- The game's tooltip of the XP bar gets the gap with the guide, added after the bar's own
+--- OnEnter filled it. Only a bar that has an OnEnter of its own is hooked: hooking a frame
+--- without one gives it one, and the game then has it take the mouse from the frames under it.
 local function Hook(bar)
-    if hooked == bar or not bar.HookScript then return end
-    hooked = bar
+    if hooked[bar] or not bar.HookScript or not bar.GetScript or not bar:GetScript("OnEnter") then return end
+    hooked[bar] = true
     bar:HookScript("OnEnter", function()
         local line = FG:Get("uiShown") and FG:Get("xpMarker") and XpMarker:Line()
         if line and GameTooltip:IsShown() then

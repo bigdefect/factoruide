@@ -18,6 +18,7 @@ pub fn walk_world(conn: &Connection, overrides: &Overrides, faction: Faction) ->
     let params = &overrides.params;
     let mut world = World::load(conn, faction, params.flight_speed)?;
     world.enclose(&overrides.enclosed);
+    world.raise(&overrides.raised);
     let passes: Vec<_> = (overrides.passes.iter())
         .filter(|p| params.shortcuts || !p.shortcut)
         .cloned()

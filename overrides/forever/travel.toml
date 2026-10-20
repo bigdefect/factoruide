@@ -41,6 +41,18 @@ to = { zone = 16591, x = 80.6, y = 54.6 }    # Riverglades
 seconds = 170
 
 # --- Skyborne starting island (Zephras Isle) ---
+# Thendal Grove's watchtower: Walk on Air, the Skyborne's racial, slows a fall; from the top
+# (Halaan Hawk-Eye, Myriaal Mistwake) the player jumps off and glides down to Rorian the
+# Dayseeker instead of walking down the stairs (passes.toml). Falling With Style asks for it.
+[[link]]
+name = "Glide down from the watchtower with Walk on Air"
+races = ["skyborne", "skyborne_horde"]
+from = { zone = 16593, x = 43.71, y = 24.08 } # the top of the watchtower
+to = { zone = 16593, x = 42.05, y = 23.49 }   # Rorian the Dayseeker
+seconds = 6
+instant = true
+one_way = true
+
 # The last island quest sends you away: "The Magical City of Dalaran" (Alliance) to Denaaris
 # Stargale in Dalaran, "The Earthen Ring" (Horde) to Alaana Stormwalker in Mulgore. The trip
 # is a teleport from the quest giver (no way back), offered once the quest is taken.

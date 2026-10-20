@@ -65,10 +65,11 @@ pub struct World {
     /// The way each direct flight goes (world x, y, its ends included), by node indexes.
     taxi_paths: HashMap<(usize, usize), Vec<(f64, f64)>>,
     pub links: Vec<Link>,
-    /// Quests whose taking opens links (`LinkDef::after_quest`).
-    pub link_quests: Vec<i64>,
+    /// Quests whose taking opens links (`LinkDef::after_quest`), with whether only while they
+    /// are in the log (`LinkDef::while_held`).
+    pub link_quests: Vec<(i64, bool)>,
     /// Time to chain links i..j (boarding i, leaving j), walking in between, by set of opened
-    /// `link_quests` (bit k: quest k taken).
+    /// `link_quests` (bit k: quest k taken, or in the log).
     link_chains: Vec<Vec<Vec<f64>>>,
     /// Walkable passages between zones and the shortest walk between any two of them.
     pub passes: Vec<Pass>,
@@ -85,6 +86,9 @@ pub struct World {
     /// Named places of the zone maps (their exploration overlays): to tell which zone a point
     /// belongs to where zone maps overlap, and to name towns.
     landmarks: Vec<Landmark>,
+    /// Places up a building (`[[raised]]` of passes.toml): center, radius and the yards of
+    /// stairs or ramps walked to get there or back.
+    raised: Vec<(Pos, f64, f64)>,
 }
 
 /// A named place of a zone map (Ratchet, Valley of Trials...), at the center of its overlay.
@@ -262,6 +266,7 @@ impl World {
             taxi_by_x: Vec::new(),
             terrain: crate::terrain::Terrain::load(conn)?,
             landmarks: Vec::new(),
+            raised: Vec::new(),
         };
         world.landmarks = world.load_landmarks(conn)?;
         for i in 0..world.taxi_nodes.len() {
@@ -578,6 +583,10 @@ pub struct LinkDef {
     /// Quest ID: usable only once that quest is taken (the teleport its giver offers).
     #[serde(default)]
     pub after_quest: Option<i64>,
+    /// With `after_quest`: usable only while that quest is in the log, not once turned in (the
+    /// free flight Vesprystus gives to Auberdine with Flight to Auberdine).
+    #[serde(default)]
+    pub while_held: bool,
 }
 
 /// At most this many quests open links: the set of opened ones is a byte of the trip cache key.
@@ -593,6 +602,15 @@ pub struct Link {
     pub to_zone: i64,
     pub seconds: f64,
     pub after_quest: Option<i64>,
+    /// Open only while `after_quest` is in the log (`LinkDef::while_held`).
+    pub while_held: bool,
+}
+
+impl Link {
+    /// The quest opening it (`after_quest`), and whether only while it is in the log.
+    fn opened_by(&self) -> Option<(i64, bool)> {
+        self.after_quest.map(|q| (q, self.while_held))
+    }
 }
 
 impl World {
@@ -618,6 +636,7 @@ impl World {
                 to_zone: tz,
                 seconds: d.seconds + if d.instant { 0.0 } else { wait },
                 after_quest: d.after_quest,
+                while_held: d.while_held && d.after_quest.is_some(),
             };
             self.links.push(make(a, d.from.zone, b, d.to.zone));
             if !d.one_way {
@@ -625,7 +644,7 @@ impl World {
             }
         }
         self.link_quests.clear();
-        for q in self.links.iter().filter_map(|l| l.after_quest) {
+        for q in self.links.iter().filter_map(Link::opened_by) {
             if !self.link_quests.contains(&q) {
                 self.link_quests.push(q);
             }
@@ -641,7 +660,7 @@ impl World {
     /// closed.
     fn chain_links(&self, open: usize, walk_speed: f64) -> Vec<Vec<f64>> {
         let closed = |l: &Link| {
-            l.after_quest
+            l.opened_by()
                 .and_then(|q| self.link_quests.iter().position(|&k| k == q))
                 .is_some_and(|k| open & (1 << k) == 0)
         };
@@ -722,6 +741,19 @@ pub struct EnclosedDef {
     pub at: ZonePoint,
 }
 
+/// A place up a building (`[[raised]]` of `overrides/passes.toml`): the top of a watchtower,
+/// whose stairs the straight walk on the terrain does not see. Walking there from below, or back
+/// down, takes `climb` yards more.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct RaisedDef {
+    pub name: String,
+    pub at: ZonePoint,
+    /// Yards around `at` that are up there.
+    pub radius: f64,
+    /// Yards of stairs or ramps between up there and the ground.
+    pub climb: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct Pass {
     pub name: String,
@@ -794,6 +826,24 @@ impl World {
             }
         }
         warnings
+    }
+
+    /// Places up a building: walks between up there and elsewhere take their climb more. Before
+    /// the passages and links (their walks depend on it).
+    pub fn raise(&mut self, defs: &[RaisedDef]) {
+        self.raised = (defs.iter())
+            .filter_map(|d| Some((self.to_world(d.at.zone, d.at.x, d.at.y)?, d.radius, d.climb)))
+            .collect();
+    }
+
+    /// Yards of stairs between `a` and `b`: the climb of each raised place one of them is up and
+    /// the other not.
+    fn climb(&self, a: &Pos, b: &Pos) -> f64 {
+        let up = |p: &Pos, c: &Pos, r: f64| p.continent == c.continent && (p.x - c.x).hypot(p.y - c.y) <= r;
+        (self.raised.iter())
+            .filter(|(c, r, _)| up(a, c, *r) != up(b, c, *r))
+            .map(|(_, _, climb)| climb)
+            .sum()
     }
 
     /// Register passages; subzone positions come from the map exploration overlays.
@@ -1052,7 +1102,7 @@ impl World {
     /// Walk within a zone: around the steep terrain, straight when it does not know the way,
     /// infinite to or from an enclosed area.
     fn ground(&self, a: &Pos, b: &Pos, level: u8) -> f64 {
-        self.terrain.distance(a, b, level).unwrap_or_else(|| a.dist(b))
+        self.terrain.distance(a, b, level).unwrap_or_else(|| a.dist(b)) + self.climb(a, b)
     }
 
     /// Direct walk between close points of different zones when the terrain knows the way

@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type Edition, type FoundGame, type WowStatus } from "../api";
 import { useT } from "../i18n";
-import { CLIENTS } from "../wow";
+import { CLIENTS, SUPPORTED } from "../wow";
 
 /** The game version of each game version folder the app has guides for. */
-const EDITION_OF: Record<string, Edition> = { _classic_beta_: "forever", _classic_era_: "classic", _anniversary_: "tbc" };
+const EDITION_OF: Record<string, Edition> = { _forever_: "forever", _classic_beta_: "forever", _classic_era_: "classic", _anniversary_: "tbc" };
 
 interface Props {
   /** Switch the game version the app works on. */
@@ -45,7 +45,11 @@ export function Welcome({ onEdition, onDone }: Props) {
       .catch(() => setStatus(null));
   }, [dir]);
 
-  const editions = (status?.clients ?? []).filter((c) => EDITION_OF[c]);
+  // One folder per game version, the preferred one when a version has two (_forever_ and
+  // _classic_beta_); the folders of a version are told on its card.
+  const clients = status?.clients ?? [];
+  const editions = SUPPORTED.filter((c, i) => clients.includes(c) && !SUPPORTED.slice(0, i).some((p) => clients.includes(p) && EDITION_OF[p] === EDITION_OF[c]));
+  const foldersOf = (e: Edition) => SUPPORTED.filter((c) => clients.includes(c) && EDITION_OF[c] === e).join(", ");
   const usable = editions.length > 0;
   const finishFolder = async () => {
     setError(null);
@@ -126,7 +130,7 @@ export function Welcome({ onEdition, onDone }: Props) {
           <>
             <p>{t("Sur quelle version du jeu jouez-vous ? Vous pourrez en changer à tout moment en haut du menu.")}</p>
             <div className="setup-choices" role="radiogroup" aria-label={t("Version du jeu")}>
-              {editions.map((c) => card(c, edition === EDITION_OF[c], CLIENTS[c] ?? c, c, () => setEdition(EDITION_OF[c])))}
+              {editions.map((c) => card(c, edition === EDITION_OF[c], CLIENTS[c] ?? c, foldersOf(EDITION_OF[c]), () => setEdition(EDITION_OF[c])))}
             </div>
           </>
         )}

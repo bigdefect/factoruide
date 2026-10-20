@@ -56,7 +56,7 @@ pub(super) fn chain_values(quests: &[Quest], index: &FxHashMap<i64, usize>, work
     }
     let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); quests.len()];
     for (i, q) in quests.iter().enumerate() {
-        for p in q.pre_all.iter().chain(&q.pre_any) {
+        for p in q.pre_all.iter().chain(&q.pre_any).chain(&q.pre_held) {
             // Only local follow-ups: given near where the previous step is turned in.
             if let Some(&j) = index.get(p) {
                 let near = quests[j]
@@ -95,7 +95,7 @@ pub(super) fn chain_tops(quests: &[Quest], index: &FxHashMap<i64, usize>) -> Vec
     }
     let mut next: Vec<Vec<usize>> = vec![Vec::new(); quests.len()];
     for (i, q) in quests.iter().enumerate() {
-        for p in q.pre_all.iter().chain(&q.pre_any) {
+        for p in q.pre_all.iter().chain(&q.pre_any).chain(&q.pre_held) {
             if let Some(&j) = index.get(p) {
                 next[j].push(i);
             }
@@ -175,7 +175,8 @@ pub(super) fn require_prerequisites(quests: &mut [Quest]) {
     while let Some(i) = stack.pop() {
         let any: Vec<usize> = quests[i].pre_any.iter().filter_map(|p| pos.get(p).copied()).collect();
         let only = (any.len() == 1).then(|| quests[any[0]].id);
-        for p in quests[i].pre_all.clone().into_iter().chain(only) {
+        let held = quests[i].pre_held.clone();
+        for p in quests[i].pre_all.clone().into_iter().chain(held).chain(only) {
             if let Some(&j) = pos.get(&p)
                 && !quests[j].mandatory
             {
@@ -223,7 +224,7 @@ pub(super) fn release_impossible_class_quests(quests: &mut [Quest]) {
             if !doable.contains(&q.id) {
                 continue;
             }
-            let blocked = q.pre_all.iter().any(|p| !doable.contains(p))
+            let blocked = q.pre_all.iter().chain(&q.pre_held).any(|p| !doable.contains(p))
                 || (!q.pre_any.is_empty() && q.pre_any.iter().all(|p| !doable.contains(p)));
             if blocked {
                 doable.remove(&q.id);

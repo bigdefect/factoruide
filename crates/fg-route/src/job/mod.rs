@@ -137,6 +137,9 @@ pub fn plan_interruptible(
     for missing in planner.missing_zone_quests(&best) {
         prepared.notes.push(format!("zone quest not planned: {missing}"));
     }
+    for late in planner.late_timed_quests(&best) {
+        prepared.notes.push(format!("timed quest given up: {late}"));
+    }
     if !route.total_time.is_finite() {
         let why = planner
             .diagnose(&best)
@@ -232,6 +235,7 @@ fn load_world(
     for warning in world.enclose(&overrides.enclosed) {
         progress(&warning);
     }
+    world.raise(&overrides.raised);
     for warning in world.add_passes(conn, &passes)? {
         progress(&warning);
     }

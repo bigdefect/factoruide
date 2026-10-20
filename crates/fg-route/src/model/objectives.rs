@@ -12,6 +12,30 @@ use super::types::{EntityKind, Guard, Loc, Objective, Spots};
 use crate::world::Pos;
 use std::collections::HashMap;
 
+/// An object this close to the NPC giving or taking back the quest (yards) is used in their camp.
+const BESIDE_GIVER: f64 = 30.0;
+
+/// Objects used right beside the NPC giving or taking back the quest, no elite around them (the
+/// campfire to sit at next to Kaga Wildhoof, The Great Outdoors): the character stands there to
+/// talk to the NPC anyway, so they require no power (`Objective::beside_giver`). The quest's level asked of them
+/// otherwise made the character come back a level later, which the route never did.
+fn mark_beside_givers(givers: &Givers, objs: &mut [Objective]) {
+    let beside = |o: &Objective| {
+        o.dungeon.is_none()
+            && o.kills <= 0.0
+            && o.loc.kind == EntityKind::Object
+            && !o.guard.elite
+            && (givers.starts.iter().chain(&givers.ends))
+                .any(|l| l.kind == EntityKind::Npc && l.pos.dist(&o.loc.pos) <= BESIDE_GIVER)
+    };
+    for o in objs {
+        o.beside_giver = beside(o);
+        for alt in &mut o.alts {
+            alt.beside_giver = beside(alt);
+        }
+    }
+}
+
 /// One objective row: kind, target, text, extra data, exact amount.
 pub(super) type ObjectiveRow = (ObjectiveKind, Option<i64>, Option<String>, Option<String>, Option<i64>);
 
@@ -47,6 +71,7 @@ impl Objective {
             pack: 1.0,
             spots: None,
             guard: Guard::default(),
+            beside_giver: false,
             alts: vec![],
             after: 0,
             handed_by: vec![],
@@ -92,6 +117,12 @@ impl QuestBuilder<'_> {
             if kind == ObjectiveKind::Item && row.1.is_some() && row.1 == givers.held {
                 continue;
             }
+            // An item a child hands over (the Warsong scouts' updates): got at its hand-in, one
+            // of this quest's objectives.
+            let rewarded = |item: i64| self.sources.reward_of.get(&item).is_some_and(|q| q.iter().any(|q| children.contains(q)));
+            if kind == ObjectiveKind::Item && row.1.is_some_and(rewarded) {
+                continue;
+            }
             if let Some(mut o) = self.objective(&quest, row)? {
                 // Mobs are killed and items got without the item; the rest uses it.
                 if !(kind == ObjectiveKind::Item || kind == ObjectiveKind::Creature && o.kills > 0.0) {
@@ -108,6 +139,7 @@ impl QuestBuilder<'_> {
             o.alts.retain(|a| elite || !a.elite);
             self.measure(r, &mut o.alts);
         }
+        mark_beside_givers(givers, &mut objs);
         self.add_dungeon_givers(r, &mut objs);
         Ok(objs)
     }

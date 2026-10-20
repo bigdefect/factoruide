@@ -82,6 +82,30 @@ pub const CHECKS: &[Check] = &[
                quest data",
         error: true,
     },
+    Check {
+        name: "starter-drops",
+        what: "quests started by an item dropped by creatures with no drop chance known: the \
+               planner assumes 10% when one creature (or only unique ones) drops it, and a rare \
+               find, left out of the guide, when several kinds of common mobs do. Give the chance \
+               in the quest data ([[drop]]) when it is known, or accept the assumption",
+        error: false,
+    },
+    Check {
+        name: "contradictory-prerequisites",
+        what: "quests needing themselves first, or a quest that is also exclusive with them \
+               (doing it closes the quest): the planner never offers them. Drop the wrong link \
+               in the quest data (a list of a quest's alternatives copied in place of its \
+               prerequisites, a sequence marked exclusive)",
+        error: true,
+    },
+    Check {
+        name: "timed-quests",
+        what: "quests of the guide whose objectives give a time (\"in ten minutes\") while the \
+               data has no time limit: the planner may do other things between taking and \
+               turning in, and the game fails the quest. Give the limit (`time_limit`) in the \
+               quest data, or accept a time that is no limit (a spell that lasts 2 minutes)",
+        error: false,
+    },
 ];
 
 /// Why a quest is left out when its objectives or their places are unknown to the data (the
@@ -160,6 +184,16 @@ pub fn audit(
     } else {
         Vec::new()
     };
+    let starter_drops = if on("starter-drops") {
+        starter_drops(conn)?
+    } else {
+        Vec::new()
+    };
+    let timed_text = if on("timed-quests") {
+        untimed_quests_saying_a_time(conn)?
+    } else {
+        HashMap::new()
+    };
     let trainer_quests = if on("other-class-quests") {
         trainer_quests(conn)?
     } else {
@@ -215,10 +249,23 @@ pub fn audit(
         if on("broken-chains") {
             broken_chains(&prepared.model).into_iter().for_each(&mut add);
         }
+        if on("contradictory-prerequisites") {
+            contradictory_prerequisites(&prepared.model)
+                .into_iter()
+                .for_each(&mut add);
+        }
         if on("child-quests") {
             children_left_out(&prepared.model, &children)
                 .into_iter()
                 .for_each(&mut add);
+        }
+        if on("starter-drops") {
+            unknown_starter_drops(&prepared.model, &starter_drops)
+                .into_iter()
+                .for_each(&mut add);
+        }
+        if on("timed-quests") {
+            timed_quests(&prepared.model, &timed_text).into_iter().for_each(&mut add);
         }
         if on("source-items") {
             uncovered_source_items(&prepared.model, &source_items)
@@ -606,6 +653,110 @@ fn uncovered_source_items(model: &Model, source_items: &HashMap<i64, SourceItems
     out
 }
 
+/// A quest started by an item creatures drop without any known chance (nor an object giving it).
+struct StarterDrop {
+    quest: i64,
+    quest_name: String,
+    item: i64,
+    item_name: String,
+    /// Each creature dropping it: ID, name, and what tells a unique one (rank, places known).
+    droppers: Vec<(i64, String, crate::model::Dropper)>,
+}
+
+fn starter_drops(conn: &Connection) -> Result<Vec<StarterDrop>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.quest_id, coalesce(q.name, ''), s.item_id, coalesce(i.name, ''), s.from_id,
+                coalesce(n.name, ''), coalesce(n.rank, 0),
+                (SELECT count(*) FROM m_spawn p WHERE p.entity_type = 'npc' AND p.entity_id = s.from_id AND p.x >= 0)
+         FROM m_quest_relation r
+         JOIN m_quest q ON q.id = r.quest_id
+         JOIN m_item_source s ON s.item_id = r.entity_id AND s.from_type = 'npc'
+         LEFT JOIN m_item i ON i.id = s.item_id
+         LEFT JOIN m_npc n ON n.id = s.from_id
+         WHERE r.role = 'start' AND r.entity_type = 'item'
+           AND NOT EXISTS (SELECT 1 FROM m_item_source k WHERE k.item_id = s.item_id
+                             AND (k.chance IS NOT NULL OR k.from_type = 'object'))
+         GROUP BY r.quest_id, s.item_id, s.from_id
+         ORDER BY r.quest_id, s.item_id, s.from_id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, String>(5)?,
+            r.get::<_, i64>(6)?,
+            r.get::<_, i64>(7)?,
+        ))
+    })?;
+    let mut out: Vec<StarterDrop> = Vec::new();
+    for row in rows {
+        let (quest, quest_name, item, item_name, npc, npc_name, rank, spawns) = row?;
+        let dropper = (
+            npc,
+            npc_name,
+            crate::model::Dropper {
+                rank,
+                spawns: usize::try_from(spawns).unwrap_or(0),
+            },
+        );
+        match out.last_mut() {
+            Some(last) if last.quest == quest && last.item == item => last.droppers.push(dropper),
+            _ => out.push(StarterDrop {
+                quest,
+                quest_name,
+                item,
+                item_name,
+                droppers: vec![dropper],
+            }),
+        }
+    }
+    Ok(out)
+}
+
+/// Quests of the guide (planned or left out) started by an item of unknown drop chance, with
+/// what the planner assumes for it. Not the bosses' drops, looted during the dungeon run.
+fn unknown_starter_drops(model: &Model, starters: &[StarterDrop]) -> Vec<Finding> {
+    let left_out: HashSet<i64> = model.skipped.iter().map(|(id, _, _)| *id).collect();
+    let mut out = Vec::new();
+    for s in starters {
+        let planned = model.index.get(&s.quest).map(|&i| &model.quests[i]);
+        if (planned.is_none() && !left_out.contains(&s.quest)) || planned.is_some_and(|q| q.start_dungeon.is_some()) {
+            continue;
+        }
+        let droppers: Vec<crate::model::Dropper> = s.droppers.iter().map(|d| d.2).collect();
+        let assumed = if crate::model::assumed_start_chance(&droppers) > 0.0 {
+            format!(
+                "assumed {:.0}% (its own creature's)",
+                crate::model::UNKNOWN_START_CHANCE * 100.0
+            )
+        } else {
+            "assumed rare (common mobs): left out".to_owned()
+        };
+        let names: Vec<String> = s
+            .droppers
+            .iter()
+            .map(|(id, name, _)| format!("{name} ({id})"))
+            .collect();
+        out.push(Finding {
+            check: "starter-drops",
+            key: format!("quest {} item {}", s.quest, s.item),
+            detail: format!(
+                "{} ({}) starts with {} ({}), dropped by {}: no drop chance known, {assumed}",
+                s.quest_name,
+                s.quest,
+                s.item_name,
+                s.item,
+                names.join(", ")
+            ),
+            races: Vec::new(),
+        });
+    }
+    out
+}
+
 /// The quests of the 1.12 data (VMaNGOS): the server's own prerequisites, complete.
 fn old_quests(conn: &Connection) -> Result<HashSet<i64>> {
     let mut stmt = conn.prepare("SELECT id FROM m_quest WHERE ',' || sources || ',' LIKE '%,vmangos,%'")?;
@@ -667,6 +818,55 @@ fn chain_order(model: &Model, old_quests: &HashSet<i64>) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// Quests without a time limit whose objectives text speaks of minutes or a time limit, with
+/// that text: Grace of An'she and Mu'sha ("before the incense burns to ash in ten minutes") had
+/// none, the guide did eight steps between taking and turning it in, and the game failed it.
+fn untimed_quests_saying_a_time(conn: &Connection) -> Result<HashMap<i64, String>> {
+    let has_limit: bool = conn.query_row(
+        "SELECT count(*) > 0 FROM pragma_table_info('m_quest') WHERE name = 'time_limit'",
+        [],
+        |r| r.get(0),
+    )?;
+    let limit = if has_limit { "coalesce(time_limit, 0)" } else { "0" };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, objectives_text FROM m_quest WHERE {limit} <= 0 AND objectives_text IS NOT NULL"
+    ))?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+    let mut out = HashMap::new();
+    for row in rows {
+        let (id, text) = row?;
+        if says_a_time(&text) {
+            out.insert(id, text);
+        }
+    }
+    Ok(out)
+}
+
+/// The text gives a time to do the quest in.
+fn says_a_time(text: &str) -> bool {
+    let text = text.to_lowercase();
+    ["minute", "time limit", "time runs out", "before time"]
+        .iter()
+        .any(|w| text.contains(w))
+}
+
+fn timed_quests(model: &Model, untimed: &HashMap<i64, String>) -> Vec<Finding> {
+    model
+        .quests
+        .iter()
+        .filter_map(|q| {
+            let text = untimed.get(&q.id)?;
+            let excerpt: String = text.chars().take(120).collect();
+            Some(Finding {
+                check: "timed-quests",
+                key: format!("quest {}", q.id),
+                detail: format!("{} ({}): no time limit known, its objectives say \"{excerpt}\"", q.name, q.id),
+                races: Vec::new(),
+            })
+        })
+        .collect()
 }
 
 /// (parent, parent's name, child, child's name) of the children the guides hand in on the way
@@ -739,6 +939,47 @@ fn broken_chains(model: &Model) -> Vec<Finding> {
         .collect()
 }
 
+/// Quests whose prerequisites can never be met: themselves (Call of Earth listing its group,
+/// itself included, as what it needs first), or a quest exclusive with them (taking it closes
+/// the quest).
+fn contradictory_prerequisites(model: &Model) -> Vec<Finding> {
+    let exclusive = |a: &crate::model::Quest, b: i64| {
+        a.exclusive.contains(&b)
+            || model
+                .index
+                .get(&b)
+                .is_some_and(|&j| model.quests[j].exclusive.contains(&a.id))
+    };
+    let mut out = Vec::new();
+    for q in &model.quests {
+        let mut wrong: Vec<i64> = Vec::new();
+        for &p in q.pre_all.iter().chain(&q.pre_any) {
+            if (p == q.id || exclusive(q, p)) && !wrong.contains(&p) {
+                wrong.push(p);
+            }
+        }
+        if wrong.is_empty() {
+            continue;
+        }
+        let what: Vec<String> = (wrong.iter())
+            .map(|&p| {
+                if p == q.id {
+                    "itself".to_owned()
+                } else {
+                    format!("{p} (exclusive with it)")
+                }
+            })
+            .collect();
+        out.push(Finding {
+            check: "contradictory-prerequisites",
+            key: format!("quest {}", q.id),
+            detail: format!("{} ({}) needs first {}", q.name, q.id, what.join(", ")),
+            races: Vec::new(),
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -800,5 +1041,37 @@ mod tests {
         p.model.quests[1].pre_all.clear();
         p.model.quests[0].min_level = 10;
         assert_eq!(found(&p.model, &HashSet::new()), [format!("quest {hermit}")]);
+    }
+
+    /// Call of Earth's case: a quest needing itself, or a quest exclusive with it, first. Not
+    /// found for a prerequisite that is only exclusive with another quest.
+    #[test]
+    fn a_quest_needing_itself_or_an_exclusive_quest_first_is_found() {
+        let mut p = quests_at_start(3);
+        let (a, b, c) = (p.model.quests[0].id, p.model.quests[1].id, p.model.quests[2].id);
+        let keys = |m: &Model| -> Vec<String> { contradictory_prerequisites(m).into_iter().map(|f| f.key).collect() };
+        p.model.quests[1].pre_any = vec![a];
+        p.model.quests[0].exclusive = vec![c];
+        assert!(keys(&p.model).is_empty(), "a sequence");
+        p.model.quests[0].pre_any = vec![a, b];
+        assert_eq!(keys(&p.model), [format!("quest {a}")], "itself");
+        p.model.quests[0].pre_any.clear();
+        p.model.quests[2].pre_all = vec![a];
+        assert_eq!(keys(&p.model), [format!("quest {c}")], "exclusive the other way");
+    }
+
+    /// A quest of the guide whose objectives give a time and that has no limit is found; with
+    /// a limit, or not in the guide, it is not.
+    #[test]
+    fn a_quest_saying_a_time_without_a_limit_is_found() {
+        let p = quests_at_start(2);
+        let id = p.model.quests[0].id;
+        let text = "Carry the Smoldering Incense to the shrine before the incense burns to ash in ten minutes!";
+        assert!(says_a_time(text));
+        assert!(!says_a_time("Kill 10 Plainstriders."));
+        let untimed = HashMap::from([(id, text.to_owned()), (990_002, text.to_owned())]);
+        let keys: Vec<String> = timed_quests(&p.model, &untimed).into_iter().map(|f| f.key).collect();
+        assert_eq!(keys, [format!("quest {id}")]);
+        assert!(timed_quests(&p.model, &HashMap::new()).is_empty());
     }
 }

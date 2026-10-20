@@ -11,7 +11,7 @@ pub(crate) fn followers(model: &Model) -> Vec<Vec<u32>> {
     let mut out = vec![Vec::new(); model.quests.len()];
     for (f, q) in model.quests.iter().enumerate() {
         let handing = q.objectives.iter().flat_map(|o| &o.handed_by);
-        for id in q.pre_all.iter().chain(&q.pre_any).chain(handing) {
+        for id in q.pre_all.iter().chain(&q.pre_any).chain(&q.pre_held).chain(handing) {
             if let Some(&i) = model.index.get(id)
                 && i != f
                 && !out[i].contains(&(f as u32))
@@ -58,7 +58,9 @@ impl Availability<'_> {
             // else assumed done only when starting mid-way.
             None => self.model.initial.done_outside(*id, self.profile.from_level),
         };
-        q.pre_all.iter().all(done) && (q.pre_any.is_empty() || q.pre_any.iter().any(done))
+        // In the log: taken, not turned in nor given up.
+        let held = |id: &i64| self.model.index.get(id).is_some_and(|&i| s.accepted[i] && !s.turned[i]);
+        q.pre_all.iter().all(done) && (q.pre_any.is_empty() || q.pre_any.iter().any(done)) && q.pre_held.iter().all(held)
     }
 
     pub(crate) fn blocked(&self, s: &State, q: &Quest) -> bool {
@@ -188,9 +190,7 @@ impl Availability<'_> {
                 }
                 // A quest needing any of several still has the others.
                 let fq = self.quest_at(f);
-                let needs_it = fq
-                    .pre_all
-                    .iter()
+                let needs_it = (fq.pre_all.iter().chain(&fq.pre_held))
                     .any(|id| self.model.index.get(id) == Some(&(i as usize)))
                     || fq
                         .pre_any

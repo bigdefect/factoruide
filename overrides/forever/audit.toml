@@ -292,3 +292,13 @@ reason = "Legacy Reward: Spectral Bear Cub: a Legacy reward, independent of the 
 check = "chain-order"
 key = "quest 97225"
 reason = "Forgotten Loa Idols: offered by Master Vornal to a level 5 character who had not done Lost in the Shadows (seen in game)"
+
+[[accept]]
+check = "other-class-quests"
+key = "quest 98389"
+reason = "A Light in the Darkness: Aramis Hammerhand (paladin trainer) offers it to every class after The Damned, seen in game by an undead warlock"
+
+[[accept]]
+check = "other-class-quests"
+key = "quest 99152"
+reason = "As Above, So Below: Hilda the Breaker (paladin trainer) gives it to every undead class at level 10 (Forever's quest data)"

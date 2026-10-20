@@ -491,6 +491,11 @@ fn shared_title(goals: &[Goal]) -> Option<String> {
 }
 
 /// The steps of Polestar's guide: each a title and its goals.
+///
+/// An objective done along the way is optional and never holds the guide: before the turn-in
+/// of a quest with such objectives, a step of its own holds it until the quest is complete
+/// (otherwise Polestar shows the turn-in while the objectives are not done: Naga at the Zoram
+/// Strand before the 20 Wrathtail Heads).
 fn plan(route: &Route) -> Vec<(Option<String>, Vec<Goal>)> {
     let mut steps: Vec<(Option<String>, Vec<Goal>)> = Vec::new();
     let mut before: Vec<Goal> = Vec::new();
@@ -498,8 +503,30 @@ fn plan(route: &Route) -> Vec<(Option<String>, Vec<Goal>)> {
     // Where the last step's first goal is, while goals near it may join it; whether one did.
     let mut anchor: Option<[f64; 3]> = None;
     let mut grouped: Vec<bool> = Vec::new();
+    // Quests with optional objectives, by ID as written.
+    let mut along: Vec<String> = Vec::new();
     for step in &route.steps {
         for goal in goals(step) {
+            let quest = goal.get("quest").map(str::to_owned);
+            if goal.get("oi").is_some() && goal.get("optional").is_some() {
+                along.extend(quest.clone().filter(|q| !along.contains(q)));
+            }
+            if goal.verb == "turnin"
+                && goal.get("direct").is_none()
+                && let Some(q) = quest.filter(|q| along.contains(q))
+            {
+                along.retain(|a| *a != q);
+                let mut complete = Goal::new("complete", Join::Alone).num("quest", &q);
+                if let Some(title) = goal.get("title") {
+                    complete = complete.str("title", title);
+                }
+                complete.title = goal.get("title").map(str::to_owned);
+                steps.push((complete.title.clone(), vec![complete]));
+                grouped.push(false);
+                last = None;
+                // The turn-in goes after the step holding it, never in it.
+                anchor = None;
+            }
             if goal.join == Join::Before {
                 before.push(goal);
                 continue;
@@ -804,6 +831,57 @@ mod tests {
         assert!(steps[0][0].contains("oi = 2, optional = true"));
         assert!(steps[1][0].contains("t = \"kill\", target = \"Explore the mine\", quest = 6"));
         assert!(steps[2][0].starts_with("{ t = \"complete\", quest = 7, title = \"S\""));
+    }
+
+    /// Objectives done along the way are optional: the turn-in waits behind a step holding the
+    /// guide until the quest is complete (GitHub #370: Naga at the Zoram Strand shown before the
+    /// 20 Wrathtail Heads).
+    #[test]
+    fn turn_in_after_objectives_along_the_way_waits_for_the_quest() {
+        let r = route(
+            &[
+                step(
+                    json!({ "kind": "objective", "quest": 6442, "quest_name": "Naga at the Zoram Strand", "objective": 0,
+                    "bg": true, "target": { "kind": "item", "id": 5490, "name": "Wrathtail Head" }, "map": at(12.0),
+                    "say": [{ "k": "objective.get", "a": { "n": { "num": 20 } } }], "text": "Wrathtail Head x20" }),
+                ),
+                step(
+                    json!({ "kind": "turnin", "quest": 6442, "quest_name": "Naga at the Zoram Strand",
+                    "target": npc(12721, "Mitsuwa"), "map": at(11.0), "text": "Turn it in" }),
+                ),
+            ],
+            "enUS",
+        );
+        let steps = steps(&guide("g", &r));
+        assert_eq!(steps.len(), 3, "{steps:?}");
+        assert!(steps[0][0].contains("optional = true"));
+        assert_eq!(steps[1].len(), 1, "{steps:?}");
+        assert!(steps[1][0].starts_with("{ t = \"complete\", quest = 6442, title = \"Naga at the Zoram Strand\""));
+        assert!(!steps[1][0].contains("optional"));
+        assert!(steps[2][0].starts_with("{ t = \"turnin\", quest = 6442"));
+    }
+
+    #[test]
+    fn a_turn_in_waiting_for_the_quest_stays_out_of_the_step_holding_it_even_near() {
+        let r = route(
+            &[
+                step(
+                    json!({ "kind": "objective", "quest": 6442, "quest_name": "Naga at the Zoram Strand", "objective": 0,
+                    "bg": true, "target": { "kind": "item", "id": 5490, "name": "Wrathtail Head" }, "map": at(12.0),
+                    "world": [1.0, 0.0, 0.0], "say": [{ "k": "objective.get", "a": { "n": { "num": 20 } } }] }),
+                ),
+                step(
+                    json!({ "kind": "turnin", "quest": 6442, "quest_name": "Naga at the Zoram Strand",
+                    "target": npc(12721, "Mitsuwa"), "map": at(11.0), "world": [1.0, 10.0, 0.0] }),
+                ),
+            ],
+            "enUS",
+        );
+        let steps = steps(&guide("g", &r));
+        let lens: Vec<usize> = steps.iter().map(Vec::len).collect();
+        assert_eq!(lens, [1, 1, 1], "{steps:?}");
+        assert!(steps[1][0].starts_with("{ t = \"complete\", quest = 6442"));
+        assert!(steps[2][0].starts_with("{ t = \"turnin\", quest = 6442"));
     }
 
     #[test]

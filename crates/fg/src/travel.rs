@@ -33,6 +33,7 @@ pub fn run(conn: &Connection, overrides_dir: &Path, faction: &str, from: &str, t
     for w in world.enclose(&overrides.enclosed) {
         eprintln!("{w}");
     }
+    world.raise(&overrides.raised);
     for w in world.add_passes(conn, &overrides.passes)? {
         eprintln!("{w}");
     }

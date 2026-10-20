@@ -1,6 +1,7 @@
 //! Experience rules of each game version.
 
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 /// Game version a guide is made for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -57,13 +58,49 @@ impl Edition {
         }
     }
 
-    /// Client folder in the WoW install.
-    pub fn client_folder(self) -> &'static str {
+    /// Client folders this game version may have in the WoW install, the preferred one first:
+    /// WoW Forever's beta is in `_classic_beta_`, its stress test made `_forever_` (the folder
+    /// after its release).
+    pub fn client_folders(self) -> &'static [&'static str] {
         match self {
-            Edition::Forever => "_classic_beta_",
-            Edition::Classic => "_classic_era_",
-            Edition::Tbc => "_anniversary_",
+            Edition::Forever => &["_forever_", "_classic_beta_"],
+            Edition::Classic => &["_classic_era_"],
+            Edition::Tbc => &["_anniversary_"],
         }
+    }
+
+    /// Whether a client folder name (`_classic_era_`...) is one of this game version's.
+    pub fn has_client_folder(self, name: &str) -> bool {
+        self.client_folders().contains(&name)
+    }
+
+    /// This game version's client folder in a WoW install (`root`). When several are there, the
+    /// one the game ran last in (its WTF/Config.wtf, written whenever the game quits), the
+    /// preferred one on a tie; none there: the preferred one.
+    pub fn client_dir(self, root: &Path) -> PathBuf {
+        let last_run = |dir: &Path| {
+            std::fs::metadata(dir.join("WTF/Config.wtf"))
+                .and_then(|m| m.modified())
+                .ok()
+        };
+        let folders = self.client_folders();
+        let mut best: Option<(PathBuf, Option<std::time::SystemTime>)> = None;
+        for folder in folders {
+            let dir = root.join(folder);
+            if !dir.is_dir() {
+                continue;
+            }
+            let time = last_run(&dir);
+            if best.as_ref().is_none_or(|(_, t)| time > *t) {
+                best = Some((dir, time));
+            }
+        }
+        best.map_or_else(|| root.join(folders[0]), |(dir, _)| dir)
+    }
+
+    /// Whether this game version is installed in a WoW install (`root`).
+    pub fn installed_in(self, root: &Path) -> bool {
+        self.client_folders().iter().any(|f| root.join(f).is_dir())
     }
 
     /// Overrides folder (`overrides/<key>/`), its files added to those of `overrides/`.
@@ -144,15 +181,18 @@ static CLASSIC: Rules = Rules {
 /// that players level in the open world (beta, October 2026, values still being tuned):
 /// - kills: 25% of Classic (measured in the Deadmines: 28 → 7 XP, elites 80 → 20), then +20%
 ///   announced on October 8;
-/// - quests: Classic XP + a bonus of 1.375 times it since October 1 (it was 2.75; Edwin
-///   VanCleef: 2600 XP in Classic, 6175 in Forever);
+/// - quests: Classic XP times about 2 since the bonus was cut again (3.75 before October 1,
+///   then 2.375: Edwin VanCleef 2600 XP in Classic, 6175 in Forever). Quests received in
+///   game since give 1.94 (Wailing Caverns), 2.1 (Stockade), 1.8 (Gnomeregan) and 2.675
+///   (Shadowfang Keep) times Classic's: 2 for those not observed (the observed ones keep their
+///   own XP);
 /// - a mob below the character gives the XP of its own level's base (measured at level 25,
 ///   October 14: mobs 19 to 22 give 64, 79, 95, 113, not Classic's 77, 93, 108, 124; at or
 ///   above the character's level, Classic's).
 static FOREVER: Rules = Rules {
     edition_name: "WoW Forever",
     dungeon_kill_xp: 0.25 * 1.2,
-    dungeon_quest_xp: 2.375,
+    dungeon_quest_xp: 2.0,
     low_kill_base_at_mob_level: true,
     ..CLASSIC
 };
@@ -317,7 +357,7 @@ mod tests {
     fn forever_dungeons() {
         let (forever, classic) = (Edition::Forever.rules(), Edition::Classic.rules());
         assert!((forever.dungeon_kill_xp - 0.3).abs() < 1e-9);
-        assert!((forever.dungeon_quest_xp - 2.375).abs() < 1e-9);
+        assert!((forever.dungeon_quest_xp - 2.0).abs() < 1e-9);
         assert!((classic.dungeon_kill_xp - 1.0).abs() < 1e-9);
         assert_eq!(forever.to_next_level(30), classic.to_next_level(30));
     }

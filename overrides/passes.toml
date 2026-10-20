@@ -277,3 +277,9 @@ at = { zone = 141, x = 55.5, y = 90.0 }
 [[enclosed]]
 name = "Teldrassil"                 # the portal down to Rut'theran Village
 at = { zone = 141, x = 56.0, y = 60.0 }
+
+# --- Raised places -------------------------------------------------------------------
+# The top of a building (a watchtower) the terrain does not see: walks there from below, or back
+# down, take `climb` yards of stairs or ramps more. `radius`: yards around `at` that are up there.
+# A link (travel.toml) may leave such a place faster (a jump, a glide). <edition>/passes.toml
+# adds those of one game version.

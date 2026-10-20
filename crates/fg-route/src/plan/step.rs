@@ -227,8 +227,14 @@ impl Planner<'_> {
         picked.map(|item| p.items[item as usize].id)
     }
 
+    /// Stops a timed quest's time limit applies to: its objectives and its turn-in.
+    pub(crate) fn timed(kind: Kind) -> bool {
+        matches!(kind, Kind::TurnIn | Kind::Objective(_))
+    }
+
     /// A timed quest reached after its time (see `TIMED_SHARE`) has failed: given up instead of
-    /// turned in (no reward, no follow-up), which the optimizer avoids. Returns whether it did.
+    /// turned in or worked on (no reward, no follow-up, nor a child handed in late), which the
+    /// optimizer avoids. Returns whether it did.
     pub(crate) fn failed_in_time(s: &mut State, i: u32, record: &mut impl FnMut(&State, Event)) -> bool {
         if !s.timers.iter().any(|&(q, deadline)| q == i && s.time > deadline) {
             return false;
@@ -270,14 +276,14 @@ impl Planner<'_> {
             return;
         }
         // Failed already: given up where the character stands, no trip to the turn-in.
-        if stop.kind == Kind::TurnIn && Self::failed_in_time(s, stop.index, record) {
+        if Self::timed(stop.kind) && Self::failed_in_time(s, stop.index, record) {
             return;
         }
         // Chosen once, before grinding to it: the place the stop is gated by is the one gone to.
         let spot = self.spot_of(s, stop);
         self.grind_to_gate(s, stop, spot, record);
         let loc = self.arrive(s, stop, spot, record);
-        if !(stop.kind == Kind::TurnIn && Self::failed_in_time(s, stop.index, record)) {
+        if !(Self::timed(stop.kind) && Self::failed_in_time(s, stop.index, record)) {
             let picked = self.do_stop(s, stop, spot);
             record(s, Event::Stop { stop, loc });
             if let Some(item) = picked {

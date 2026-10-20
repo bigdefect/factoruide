@@ -812,6 +812,7 @@ fn gathering_next_to_kills_overlaps_them() {
                 points: vec![point],
             }),
             guard: Guard::default(),
+            beside_giver: false,
             alts: vec![],
             after: 0,
             handed_by: vec![],
@@ -1060,6 +1061,7 @@ fn link_opened_by_a_quest() {
         instant: true,
         races: vec![],
         after_quest: Some(p.model.quests[1].id),
+        while_held: false,
     };
     let (faction, speed, wait) = (
         p.profile.faction,
@@ -1082,6 +1084,74 @@ fn link_opened_by_a_quest() {
     };
     assert!(!takes_it(&mut p, vec![0]), "quest 1 not taken: closed");
     assert!(takes_it(&mut p, vec![0, 1]), "quest 1 taken: open");
+}
+
+/// A place up a building (the top of a watchtower) takes its climb more to walk to from below
+/// and back down, nothing more between two points up there.
+#[test]
+fn raised_place_takes_its_climb() {
+    let mut p = quests_at_start(1);
+    let up = p.world.to_world(12, 48.17, 42.94).unwrap();
+    let beside = p.world.to_world(12, 48.19, 42.94).unwrap();
+    let below = p.world.to_world(12, 49.0, 42.94).unwrap();
+    let before = (p.world.walk_distance(&up, &below), p.world.walk_distance(&up, &beside));
+    p.world.raise(&[fg_route::world::RaisedDef {
+        name: "Watchtower".into(),
+        at: fg_route::world::ZonePoint { zone: 12, x: 48.17, y: 42.94 },
+        radius: 5.0,
+        climb: 60.0,
+    }]);
+    assert!((p.world.walk_distance(&up, &below) - before.0 - 60.0).abs() < 1e-6);
+    assert!((p.world.walk_distance(&below, &up) - before.0 - 60.0).abs() < 1e-6);
+    assert!((p.world.walk_distance(&up, &beside) - before.1).abs() < 1e-6);
+}
+
+/// A link open only while a quest is in the log (Vesprystus flies the character to Auberdine
+/// with Flight to Auberdine, the flight path known or not) is closed before it is taken and
+/// once it is turned in.
+#[test]
+fn link_open_while_a_quest_is_held() {
+    let mut p = quests_at_start(2);
+    let point = |zone, x, y| fg_route::world::ZonePoint { zone, x, y };
+    let link = fg_route::world::LinkDef {
+        name: "While quest 1 is held".into(),
+        faction: None,
+        from: point(12, 48.17, 42.94),
+        to: point(1537, 50.0, 50.0),
+        seconds: 5.0,
+        one_way: true,
+        instant: true,
+        races: vec![],
+        after_quest: Some(p.model.quests[1].id),
+        while_held: true,
+    };
+    let (faction, speed, wait) = (
+        p.profile.faction,
+        p.params.run_speed / p.params.detour,
+        p.params.link_wait,
+    );
+    p.world.add_links(&[link], faction, speed, wait);
+    let mut o = one_kill_east_of_start(&p, 0.0);
+    (o.loc.pos, o.loc.zone) = (p.world.to_world(1537, 50.0, 50.0).unwrap(), 1537);
+    p.model.quests[0].objectives = vec![o];
+    let takes_it = |p: &mut Prepared, accepted: Vec<usize>, turned: Vec<usize>| {
+        p.model.initial.accepted = accepted;
+        p.model.initial.turned = turned;
+        // Quest 1 handed in after when in the log: kept there (one the route does nothing with
+        // is given up at the start).
+        let mut route = vec![Stop::quest(0, Kind::Objective(0))];
+        if p.model.initial.accepted.contains(&1) {
+            route.push(Stop::quest(1, Kind::TurnIn));
+        }
+        let mut trace = Vec::new();
+        planner(p).simulate_full(&route, Some(&mut trace)).unwrap();
+        trace
+            .iter()
+            .any(|t| matches!(t.event, Event::Link { first, .. } if p.world.links[first].name == "While quest 1 is held"))
+    };
+    assert!(!takes_it(&mut p, vec![0], vec![]), "quest 1 not taken: closed");
+    assert!(takes_it(&mut p, vec![0, 1], vec![]), "quest 1 in the log: open");
+    assert!(!takes_it(&mut p, vec![0], vec![1]), "quest 1 turned in: closed");
 }
 
 /// A quest given up is not turned in: it opens no follow-up. Fire Hardened Mail, left in the log
@@ -1819,6 +1889,7 @@ fn kills_east_of_start(p: &Prepared, dx: f64, kills: f64, mob_level: i64) -> Obj
         pack: 1.0,
         spots: None,
         guard: Guard::default(),
+        beside_giver: false,
         alts: vec![],
         after: 0,
         handed_by: vec![],
@@ -2349,5 +2420,100 @@ fn limited_supply_follows_the_crowd() {
     assert!(
         vendor > auction,
         "crowded server: {vendor} at the vendor, {auction} at the auction house"
+    );
+}
+
+/// The Great Outdoors (Forever, GitHub #35): sitting at the campfire beside the quest's giver, in
+/// every starting camp, is done in the camp at the level the quest is taken, as soon as The
+/// Adventurer is handed in, not a level later for the quest's level.
+#[test]
+fn campfire_beside_the_giver_needs_no_power() {
+    let overrides = Overrides::load_edition(&repo().join("overrides"), Edition::Forever).unwrap();
+    for (race, class, id) in [
+        ("tauren", "druid", 96605),
+        ("orc", "warrior", 96604),
+        ("undead", "priest", 96607),
+        ("dwarf", "warrior", 96608),
+        ("human", "warrior", 95998),
+        ("nightelf", "warrior", 96606),
+        ("skyborne", "mage", 96101),
+    ] {
+        let request = PlanRequest {
+            params: Some(overrides.params.with_overrides(&["progression=cautious".into()]).unwrap()),
+            ..request(race, class, 20, &[])
+        };
+        let p = job::prepare(&database_of("forever"), &overrides, &request, &|_| {}).unwrap();
+        let i = quest(&p, id).unwrap_or_else(|| panic!("The Great Outdoors {id} planned for {race}"));
+        let q = &p.model.quests[i as usize];
+        assert!(q.skill.is_none(), "{id}: an ordinary quest, not a profession's");
+        let o = &q.objectives[0];
+        assert!(o.text.starts_with("Sit by the Basic Campfire"), "{id}: {}", o.text);
+        assert!(o.beside_giver, "{id}: the campfire is beside {}", q.starts[0].name);
+        assert!(
+            q.starts.iter().any(|l| l.pos.dist(&o.loc.pos) < 30.0),
+            "{id}: the giver's own campfire, not another camp's"
+        );
+        let planner = planner(&p);
+        let might = fg_route::params::Might::PLAIN;
+        assert!(
+            planner.combat().level(q, 0, might) <= q.min_level,
+            "{id}: done at level {}, taken at {}",
+            planner.combat().level(q, 0, might),
+            q.min_level
+        );
+    }
+    // Only objects count as beside the giver: never kills, never among elites.
+    let p = prepare("human", "warrior", 30, &["progression=cautious"]);
+    for q in &p.model.quests {
+        for o in q.objectives.iter().filter(|o| o.beside_giver) {
+            assert!(o.kills <= 0.0 && o.loc.kind == EntityKind::Object, "{}: {}", q.name, o.text);
+            assert!(!o.guard.elite, "{}: no elite around", q.name);
+        }
+    }
+}
+
+/// Camping 101 (Forever, GitHub #35): each profession's asks not to know the camp item it
+/// teaches yet, which a character leveling never does. They are the profession's quests,
+/// optional, after The Great Outdoors; left out without the profession.
+#[test]
+fn camping_101_is_a_profession_quest_after_the_great_outdoors() {
+    let overrides = Overrides::load_edition(&repo().join("overrides"), Edition::Forever).unwrap();
+    let goal = |key: &str| fg_route::profession::ProfessionGoal {
+        key: key.into(),
+        target: 300,
+        start_level: None,
+        milestones: vec![],
+    };
+    let request = PlanRequest {
+        params: Some(overrides.params.with_overrides(&[]).unwrap()),
+        professions: vec![goal("skinning"), goal("leatherworking")],
+        ..request("tauren", "druid", 20, &[])
+    };
+    let p = job::prepare(&database_of("forever"), &overrides, &request, &|_| {}).unwrap();
+    // Camping 101: Skinning and Leatherworking at Kaga Wildhoof.
+    for id in [97936, 97934] {
+        let i = quest(&p, id).unwrap_or_else(|| panic!("Camping 101 {id} planned"));
+        let q = &p.model.quests[i as usize];
+        assert!(q.skill.is_some() && !q.mandatory, "{id}: optional, for the profession");
+        assert!(q.pre_any.contains(&96605), "{id}: after The Great Outdoors");
+    }
+    assert!(quest(&p, 97935).is_none(), "Camping 101: Mining without Mining");
+}
+
+/// The Warsong Reports (Horde, Ashenvale): Kadrak gives the Bundle of Reports with the quest,
+/// each scout takes the Warsong Report out of it and hands over the update Kadrak asks for. The
+/// scouts' quests are handed in on the way (children of The Warsong Reports): their updates are
+/// got there, neither bought nor looked for, nor the report in the bundle.
+#[test]
+fn items_a_child_hands_over_are_got_at_its_hand_in() {
+    let p = orc_warlock();
+    let reports = quest(p, 6543).expect("The Warsong Reports planned");
+    let q = &p.model.quests[reports as usize];
+    let children: Vec<i64> = q.objectives.iter().filter_map(|o| o.child).collect();
+    assert_eq!(children.len(), 3, "the three scouts' hand-ins: {children:?}");
+    assert!(
+        q.objectives.iter().all(|o| o.loc.kind != EntityKind::Item),
+        "no update to buy, no report to look for: {:?}",
+        q.objectives.iter().map(|o| &o.text).collect::<Vec<_>>()
     );
 }
