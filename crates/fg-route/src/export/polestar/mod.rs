@@ -4,9 +4,11 @@
 //! by faction, race, class and level; the profile part of the Factoruide addon keeps recording.
 //!
 //! Each step of the guide becomes a goal. Goals at the same NPC (taking and turning in quests,
-//! training, the hearthstone) make one step, and the travels and notes before a goal go in its
-//! step: Polestar counts a travel done once a later goal of its step is, so that a flight is
-//! behind the player when it lands even where the game names places in another language.
+//! training, the hearthstone) make one step, and so do goals near one another with no travel
+//! between them (a town's NPCs, a keep's mobs), which Polestar leaves open together, done in any
+//! order. The travels and notes before a goal go in its step: Polestar counts a travel done once
+//! a later goal of its step is, so that a flight is behind the player when it lands even where
+//! the game names places in another language.
 
 mod source;
 pub use source::{guide_name, pack_json, source};
@@ -456,31 +458,84 @@ fn objective(step: &Step, target: Option<&super::Target>, quest: impl Fn(Goal) -
     goal
 }
 
+/// How far from the place of a step's first goal another goal still joins it with no travel
+/// between them (yards): the NPCs of a town, the mobs of a keep (Northwatch Hold's captain,
+/// prisoner and cannoneers lie within 190 yards), not the camps of a region.
+const NEAR: f64 = 200.0;
+
+/// Whether `world` lies within [`NEAR`] of `anchor`, on the same continent.
+fn near(anchor: Option<[f64; 3]>, world: Option<[f64; 3]>) -> bool {
+    match (anchor, world) {
+        (Some([c, x, y]), Some([wc, wx, wy])) => c as i64 == wc as i64 && (x - wx).hypot(y - wy) <= NEAR,
+        _ => false,
+    }
+}
+
+/// The title of a step whose goals are at several places: the quest most of them serve, when
+/// at least two do.
+fn shared_title(goals: &[Goal]) -> Option<String> {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for quest in goals.iter().filter_map(|g| g.get("quest")) {
+        match counts.iter_mut().find(|(q, _)| *q == quest) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((quest, 1)),
+        }
+    }
+    let best = counts.iter().map(|(_, n)| *n).max().filter(|n| *n >= 2)?;
+    let (quest, _) = counts.iter().find(|(_, n)| *n == best)?;
+    goals
+        .iter()
+        .find(|g| g.get("quest") == Some(quest))
+        .and_then(|g| g.get("title"))
+        .map(str::to_owned)
+}
+
 /// The steps of Polestar's guide: each a title and its goals.
 fn plan(route: &Route) -> Vec<(Option<String>, Vec<Goal>)> {
     let mut steps: Vec<(Option<String>, Vec<Goal>)> = Vec::new();
     let mut before: Vec<Goal> = Vec::new();
     let mut last: Option<Join> = None;
+    // Where the last step's first goal is, while goals near it may join it; whether one did.
+    let mut anchor: Option<[f64; 3]> = None;
+    let mut grouped: Vec<bool> = Vec::new();
     for step in &route.steps {
         for goal in goals(step) {
             if goal.join == Join::Before {
                 before.push(goal);
                 continue;
             }
-            let joins = before.is_empty() && matches!(goal.join, Join::At(..)) && last == Some(goal.join);
+            let at_last = matches!(goal.join, Join::At(..)) && last == Some(goal.join);
+            let level = goal.verb == "level";
+            let by_place = !at_last && !level && near(anchor, step.world);
+            let joins = before.is_empty() && (at_last || by_place);
             last = Some(goal.join);
             if joins && let Some(last) = steps.last_mut() {
                 last.1.push(goal);
+                if by_place && let Some(g) = grouped.last_mut() {
+                    *g = true;
+                }
             } else {
                 let mut all = std::mem::take(&mut before);
                 let title = goal.title.clone();
                 all.push(goal);
                 steps.push((title, all));
+                grouped.push(false);
+                anchor = step.world;
+            }
+            // A grind holds its step until the level: nothing else joins it.
+            if level {
+                anchor = None;
             }
         }
     }
     if !before.is_empty() {
         steps.push((None, before));
+        grouped.push(false);
+    }
+    for ((title, goals), grouped) in steps.iter_mut().zip(grouped) {
+        if grouped && let Some(shared) = shared_title(goals) {
+            *title = Some(shared);
+        }
     }
     steps
 }
@@ -651,6 +706,48 @@ mod tests {
         // Into a level: only the place, the last step.
         assert_eq!(steps[2].len(), 1);
         assert!(steps[2][0].starts_with("{ t = \"goto\", map = 1426, x = 41"));
+    }
+
+    #[test]
+    fn goals_near_one_another_with_no_travel_between_make_one_step() {
+        let kill = |id: i64, name: &str, k: u8, world: [f64; 3]| {
+            step(
+                json!({ "kind": "objective", "quest": 891, "quest_name": "The Guns of Northwatch", "objective": k,
+                "target": npc(id, name), "say": [{ "k": "objective.kill" }], "map": at(60.0), "world": world, "text": name }),
+            )
+        };
+        let r = route(
+            &[
+                kill(3393, "Captain Fairmount", 0, [1.0, -2080.0, -3644.0]),
+                step(
+                    json!({ "kind": "accept", "quest": 898, "quest_name": "Free From the Hold",
+                    "target": npc(3465, "Gilthares Firebough"), "map": at(60.0), "world": [1.0, -2101.0, -3656.0] }),
+                ),
+                kill(3455, "Cannoneer Whessan", 1, [1.0, -2088.0, -3501.0]),
+                // 190 yards from the captain, 305 from the cannoneer before it.
+                kill(3454, "Cannoneer Smythe", 2, [1.0, -2214.0, -3779.0]),
+                // Close to the cannoneer, too far from the captain.
+                kill(3456, "Far Mob", 3, [1.0, -2290.0, -3800.0]),
+                // Close, on another continent.
+                kill(3457, "Other Continent", 4, [0.0, -2290.0, -3800.0]),
+                step(
+                    json!({ "kind": "hearth", "zone": "The Barrens", "map": at(43.0), "world": [0.0, -2290.0, -3800.0] }),
+                ),
+                kill(3458, "After Hearth", 5, [0.0, -2290.0, -3800.0]),
+                step(json!({ "kind": "grind", "level": 20, "map": at(40.0), "world": [0.0, -2290.0, -3800.0] })),
+                kill(3459, "After Grind", 6, [0.0, -2290.0, -3800.0]),
+            ],
+            "enUS",
+        );
+        let lua = guide("g", &r);
+        let steps = steps(&lua);
+        let lens: Vec<usize> = steps.iter().map(Vec::len).collect();
+        assert_eq!(lens, [4, 1, 1, 2, 2, 1], "{steps:?}");
+        assert!(steps[0][1].starts_with("{ t = \"accept\", quest = 898"));
+        assert!(steps[0][3].contains("target = \"Cannoneer Smythe\""));
+        assert!(lua.contains("{ title = \"The Guns of Northwatch\", goals = {"), "{lua}");
+        // A step of one place keeps its NPC's name.
+        assert!(lua.contains("{ title = \"Far Mob\", goals = {"), "{lua}");
     }
 
     #[test]
